@@ -105,3 +105,7 @@ P02_SpawnPacer\
 ├── Tools\           ← build, package and smoke scripts; CPU pinning; stats and run scripts from S2
 └── SpawnPacer\      ← the Unreal Engine project (SpawnPacer.uproject, Source\, Plugins\SpawnPacerCore\, Config\)
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE). Unreal Engine itself is not included and is covered by Epic Games' own license.
