@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Spawn Pacer Core",
+	"Description": "Paces actor spawns inside a game-thread millisecond budget using predicted per-class cost, and pools actors behind a reset contract that is checked for state leaks.",
+	"Category": "Performance",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SpawnPacerCore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

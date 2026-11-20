@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "P02 SpawnPacer: hitch-free content entry (UE 5.8.4 portfolio project).",
+	"Modules": [
+		{
+			"Name": "SpawnPacer",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SpawnPacerCore",
+			"Enabled": true
+		}
+	]
+}
