@@ -31,6 +31,40 @@
 
 **CPU-pinning helper:** `python -I Tools\perf_cores.py` prints `0xFFFF` (P-cores = logical CPUs 0–15) on this machine, 2026-11-21. The copied `KERNEL32` setup, `performance_core_mask`, `pin_self` and `applied_mask` are identical to UE5-UpdateBudget's current `run_bench.py` (`diff` empty). A one-off check in a throwaway Python process: `applied_mask()` read `0xFFFFFF (all logical processors)`, `pin_self(0xFFFF)` returned `True`, and `applied_mask()` then read `0xFFFF (performance cores only; hybrid CPU)`. Builds and smoke runs are not pinned; timed runs will be (01 §7).
 
+
+---
+
+## Step S1 · Workload and baseline B0 (2026-11-21)
+
+All runs: packaged Development build, real GPU (RTX 5070 Laptop, adapter 0), 1280×720 windowed, fixed step `-deterministic -FPS=60`, P-core pinned (`applied_mask` 0xFFFF), AC power, power plan "Turbo". These are **checks, not results**.
+
+| # | Check | Result |
+|---|---|---|
+| S1-a | **Build** (jobs `20261121_024900_6928b5` and, after the exit-code fix, `20261121_025813_920cda`) | ✅ Editor and game Development targets `Result: Succeeded`, the four new `.cpp` files compiled, **0 errors, 0 warnings**; package `BUILD SUCCESSFUL`, cook `Success - 0 error(s), 0 warning(s)` (519 packages, 3 more than in Phase 4, after `/Engine/BasicShapes` was added to the cook) |
+| S1-b | **Determinism:** the same seed gives the same wave | ✅ All 9 runs of batch `2026-11-21_031105_calib` (seed 1) logged `wave hash 0x29FD2F1C` |
+| S1-c | **A run with invalid settings quits at once with a failure code** (`-SPWaveSize=10 -SPConfig=B1 -SPExit`, B1 not implemented in S1) | ❌ then ✅. First run: the error was logged and the game quit after 2.5 s, but with **exit code 0**. Cause: a clean `RequestExitWithStatus` on Windows only posts a quit message and the process returns the engine's own error level (05 B4). Fixed (`QuitRun` forces the exit for a non-zero code); re-run: **exit code 2 after 1.5 s** |
+| S1-d | **B0 behaves as designed** | ✅ In every run: 3 waves; the run report shows `ready` = 500 and latency 0 frames for every wave (the whole wave in its request frame); every wave and despawn event present; `DespawnComplete` on the despawn frame; 0 log errors and 0 log warnings; 2 PSO events per run |
+| S1-e | **The B0 wave hitches** | ✅ Every wave frame is over 33.3 ms (3 of 3 per run). How much over depends on the BeginPlay work: the S2 calibration below |
+
+The S1 checks above ran inside the S2 calibration job, using the S2 harness (`run_bench.py`) before it was committed: one job instead of two in a busy machine queue.
+
+**Audit trail for S1:**
+- `code-review` (medium): 8 findings, 1 important + 7 nits, **all fixed**:
+  - (important) timing validation accepted a negative `-SPGCAfter`;
+  - "ready" was sent from the brain's BeginPlay, before the actor's own BeginPlay finished;
+  - a refused run with `-SPExit` idled until its timeout;
+  - an incomplete wave reported `ready=0`;
+  - bosses took the rounding remainder (10% of a 10-actor wave);
+  - the grid was off-centre when the last row is partly filled;
+  - `AActor` / `UWorld` were not forward-declared in `SPBaselineSpawner.h`;
+  - the run tag was not sanitised, and `-SPExit` would have closed the editor in PIE.
+- `simplify`: done as a structured self-review on the four angles (reuse, simplification, efficiency, altitude) instead of four review agents, because the project brief allows no sub-agents. Applied:
+  - (efficiency) part names built once instead of `FString::Printf` in every spawned actor's constructor, which was measured cost a real class doesn't have;
+  - (simplification) two completion booleans replaced by the wave record's own fields, and the spawn counter derived from `Live`;
+  - (altitude) one `QuitRun` decides whether to quit.
+  - Reuse: nothing to reuse yet; the engine's `Algo::RandomShuffle` uses the global random stream, so the seeded Fisher–Yates stays.
+- Found by the first run: the exit-code behaviour (S1-c).
+
 ---
 
 ## Phases 5–8 (to be written)

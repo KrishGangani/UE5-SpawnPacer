@@ -5,7 +5,8 @@
 | Part | Step | Files |
 |---|---|---|
 | A | Phase 4, F1–F4 (foundation) | `.uproject`, two `Target.cs`, two `Build.cs`, two module `.cpp`, `.uplugin`, three config `.ini`, `Tools\*.bat`, `Tools\perf_cores.py` |
-| B… | S1 onwards | added with each step |
+| B | S1 (workload, B0 only) | `SPWaveActor`, `SPWaveBrainComponent`, `SPBaselineSpawner`, `SPBenchmarkSubsystem`, `DefaultGame.ini` |
+| C… | S2 onwards | added with each step |
 
 ---
 
@@ -200,3 +201,147 @@ The `KERNEL32` setup and the three functions are copied unchanged from UE5-Updat
 | `main()` | Prints the mask, for the environment record and a quick manual check |
 
 **Phase 4 results** are recorded in [09_Testing_And_Benchmarks.md](09_Testing_And_Benchmarks.md) (F-1 to F-4).
+
+---
+
+## Part B · Step S1: the workload, B0 only
+
+**State after S1:** the game module builds a seeded 500-actor wave of four classes, runs the three-cycle wave script, and spawns and removes the wave with the plain-`SpawnActor` baseline B0. There is no SpawnPacer system code yet, on purpose: the baselines are captured first (03).
+
+### B1. `Public\SPWaveActor.h` / `Private\SPWaveActor.cpp`: the wave actors
+
+```cpp
+UCLASS(Abstract)
+class ASPWaveActor : public AActor
+{
+	GENERATED_BODY()
+public:
+	ASPWaveActor();
+	virtual void BeginPlay() override final;
+	USPWaveBrainComponent* GetBrain() const { return Brain; }
+protected:
+	virtual void WaveBeginPlay() {}
+	void BuildBody(int32 PartCount, UStaticMesh* RootMesh, UStaticMesh* PartMesh, FName RootProfile, bool bPartsCollide);
+	UPROPERTY(VisibleAnywhere, Category = "SpawnPacer Demo")
+	TObjectPtr<USPWaveBrainComponent> Brain;
+};
+```
+
+| Line | What it does, and why |
+|---|---|
+| `#include "GameFramework/Actor.h"` | `AActor` is the base class. A header includes what its declarations need; everything else is forward-declared (`class UStaticMesh;` …) so files that include this header don't pay for those headers (04 §1) |
+| `#include "SPWaveActor.generated.h"` | The code Unreal Header Tool (UHT) writes for the `UCLASS`es in this file. It must be the **last** include, or UHT stops with an error |
+| `UCLASS(Abstract)` | Registers the class with the reflection system (06 §6). `Abstract`: nobody may spawn the base itself (`SpawnActor` refuses abstract classes, `LevelActor.cpp:486–490`); only the four subclasses are spawned. It still has a class default object, which the engine needs |
+| `class ASPWaveActor : public AActor` | `A` prefix: an Actor subclass (UE naming). Public inheritance: a wave actor *is an* actor (04 §7) |
+| `GENERATED_BODY()` | Pastes the UHT-generated members (type information, constructors UHT needs) into the class |
+| `ASPWaveActor();` | The default constructor. Unreal constructs every object, including the class default object, with it |
+| `virtual void BeginPlay() override final;` | Runs the engine's `BeginPlay` (`Super::BeginPlay()`: actor ticks, every component's `BeginPlay`, then Blueprint's `ReceiveBeginPlay`, `Actor.cpp:4808–4845`), then `WaveBeginPlay()`, then reports "ready" to the director. `final`: no subclass can add work *after* the notification. **Changed by the S1 code review:** the notification used to be sent from the brain component's `BeginPlay`, which runs *inside* the actor's `Super::BeginPlay()`, so the drone's own BeginPlay work happened after "ready" |
+| `virtual void WaveBeginPlay() {}` | The hook a subclass overrides for its own BeginPlay work. Empty by default |
+| `GetBrain() const` | Read-only access for the director and later steps. `const` because it doesn't change the actor |
+| `BuildBody(...)` (protected) | Only subclasses call it, from their constructors. **Why the meshes are parameters:** a `static ConstructorHelpers::FObjectFinder` local is initialised once; if one shared helper looked up the path itself, the first class's mesh would be used for every class. Each subclass keeps its own static finder and passes the result in |
+| `UPROPERTY(VisibleAnywhere, Category = …)` on `Brain` | `UPROPERTY` makes GC see the pointer and the editor show it (06 §6). `VisibleAnywhere`: shown but not replaceable in the editor (replacing a default subobject pointer would break the actor). `TObjectPtr` is the UE5 form of an object pointer for `UPROPERTY` members (06 §11) |
+| Four subclasses, each `UCLASS()` | One class per spawn-cost profile. They have no state of their own except the drone's `Origin` (a plain member: it is set at BeginPlay and nothing needs to reflect it) |
+| `ASPDrone::WaveBeginPlay` / `Tick` overrides | `virtual … override` (04 §7): only the drone moves, so only it overrides `Tick` and the hook |
+
+**`SPWaveActor.cpp`:**
+
+| Lines | What they do, and why |
+|---|---|
+| `namespace SPWave { … }` | Named constants with their reasons next to them (04 §8): mesh paths, part layout, drone circle. No magic numbers in the code |
+| Mesh paths `"/Engine/BasicShapes/Sphere.Sphere"` … | Engine content, so nothing has to be authored. Referenced only from C++, so `DefaultGame.ini` lists the folder for cooking (B5) |
+| `PrimaryActorTick.bCanEverTick = false;` (base constructor) | Most wave actors never tick. A tick function that exists costs registration and dispatch even when empty (UE5-UpdateBudget measured this), so it is off unless the class needs it |
+| `SPWave::MaxParts` and `PartNames()` | The subobject names `Part00` … `Part22`, built **once** on first use (a `static` local initialised by a lambda, 04 §12–13). **Changed by the S1 simplify pass:** the names used to be formatted with `FString::Printf` inside every spawned actor's constructor: 23 strings per boss, a cost a real class (which uses literal names) doesn't have, inside the very thing being measured |
+| `ASPWaveActor::BeginPlay()` → `GetWorld()->GetSubsystem<USPBenchmarkSubsystem>()` → `NotifyActorReady()` | The "ready" call. `GetSubsystem` returns null in worlds without the director (editor, other maps), so it is guarded. Every configuration completes a wave through this one call (02 §9) |
+| `Brain = CreateDefaultSubobject<USPWaveBrainComponent>(TEXT("Brain"));` | Creates the component as a **default subobject**: part of the class default object, and copied into every spawned instance (06 §7). The name must be unique within the actor |
+| `CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Root"))` … `SetRootComponent(Root)` | The root mesh: every other part attaches to it, and the engine registers it first (01b §2.2) |
+| `SetCollisionProfileName(RootProfile)` | Collision profiles are named presets (06 §8). Drone: `DefaultProjectile`; crate: `BlockAllDynamic`; grunt and boss: `Pawn` (`Classes/Engine/CollisionProfile.h:189–196`). So each class creates a different amount of physics state at registration (H1) |
+| `SetCastShadow(false)` | Keeps the GPU cost of 500 actors low, so frames stay game-thread bound and a game-thread change shows in frame time (the calibration checks this, 01 §6.1) |
+| `check(NumParts <= SPWave::MaxParts);` then `CreateDefaultSubobject<UStaticMeshComponent>(SPWave::PartNames()[Index])` | One child mesh per part, each with a unique, prebuilt name. The `check` stops a future class with more parts than names at its first construction |
+| `Part->SetupAttachment(Root)` | The constructor-time way to attach (06 §7): it records the parent; the actual attachment happens at registration. *Not* `AttachToComponent`, which is for registered components at run time |
+| `SetRelativeLocation(...)` ring, three layers | A deterministic shape: same parts in the same places in every run |
+| `SetCollisionProfileName(bPartsCollide ? BlockAllDynamic : NoCollision)` | Crate parts collide (more physics state); grunt and boss parts are visual only, like most enemy meshes |
+| `ASPDrone::ASPDrone()` | `bCanEverTick = true` (it moves), a 1-part body, scale 0.3 |
+| `static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(...)` | Loads the mesh once per class: `static` means initialised on the first construction (the class default object) and reused for every later instance. A non-static finder would load the asset in every spawned actor's constructor and distort the spawn cost being measured |
+| `ASPDrone::WaveBeginPlay` → `Origin = GetActorLocation()` | The spawn position becomes the circle's centre |
+| `ASPDrone::Tick` | Position from **world time**, not accumulated `DeltaSeconds`: in fixed-step runs every configuration puts every drone at exactly the same place on the same frame |
+| `ASPCrate` / `ASPGrunt` / `ASPBoss` constructors | 3 / 6 / 24 parts (01 §6.1). The grunt and boss set `Brain->BeginPlayWorkScale = 1.0f` and `Brain->bThinks = true`: they are the enemies |
+| `GetRootComponent()->SetRelativeScale3D(...)` | Size only. Scale on the root scales its children too |
+
+### B2. `Public\SPWaveBrainComponent.h` / `.cpp`: the gameplay stand-in
+
+| Line | What it does, and why |
+|---|---|
+| `#include "Engine/TimerHandle.h"` | The header declares an `FTimerHandle` **member**, which needs the full type (a forward declaration is enough only for pointers and references). Found while reviewing the code before its first build |
+| `UENUM() enum class ESPBrainState : uint8 { Idle, Engaging, Retreating };` | A scoped enum, one byte, reflected so a `UPROPERTY` can hold it (06 §6). It is state the think timer changes, so a pool would have to reset it |
+| `UCLASS(ClassGroup = (SpawnPacerDemo))` | `ClassGroup` only files the component under a heading in the editor's "Add Component" menu |
+| `PrimaryComponentTick.bCanEverTick = false;` | The brain never works per frame: in BeginPlay and in its timer only |
+| `UPROPERTY(EditDefaultsOnly) float BeginPlayWorkScale = 0.0f;` | Editable on class defaults only (per class, not per placed instance). 0 for drones and crates, 1 for enemies (set by their constructors). `float` because it multiplies the iteration count |
+| `UPROPERTY(EditDefaultsOnly) bool bThinks = false;` | `b` prefix for booleans (UE naming). Enemies only |
+| `UPROPERTY(VisibleInstanceOnly) float Health … int32 Ammo … ESPBrainState State … int32 ThinkCount` | Gameplay state, **private** with `const` getters (no outside code may change it). `UPROPERTY` on purpose: the reset verifier of step S8 compares reflected properties. `VisibleInstanceOnly`: visible on a live instance in the editor's details panel, never editable |
+| `float WorkSink` (not a `UPROPERTY`) | The set-up loop's result, stored in a member so the optimiser can't delete the loop (04 §11) |
+| `FTimerHandle ThinkTimer` | The handle the timer manager fills in; needed to clear the timer (06 §9) |
+| `TAutoConsoleVariable<int32> CVarBeginPlayWork(TEXT("sp.Demo.BeginPlayWork"), 4000, …, ECVF_Default)` | One value for every brain, whoever spawned it. `ECVF_Default` so it can be set from the command line and config (cheat flags can't be, UE5-UpdateBudget 01b #11). 4000 is a starting value; S2 calibrates it and records the choice in 09 |
+| `const int32 Iterations = FMath::RoundToInt32(CVar.GetValueOnGameThread() * BeginPlayWorkScale);` | `GetValueOnGameThread()` is the thread-correct read for game-thread code. Rounded, because a fractional scale is allowed |
+| `for (...) { Sink = FMath::Sin(Sink + 0.001f * Index); }` | A **dependent chain**: each step needs the previous result, so the CPU can't run iterations in parallel and the compiler can't vectorise it. The cost is therefore proportional to the count, which makes it a calibratable dial |
+| `World->GetTimerManager().SetTimer(ThinkTimer, this, &USPWaveBrainComponent::Think, SPBrain::ThinkInterval, true);` | A repeating 0.5 s timer bound to a member function (06 §9). `true` = loop |
+| `EndPlay` → `ClearTimer(ThinkTimer)` → `Super::EndPlay` | The engine doesn't clear timers on EndPlay (01b #11). A destroyed brain's timer would just stop firing; a pooled one (S7) would keep firing, so the brain clears its own. `Super` last, so the base class still sees a valid component |
+| `Think()` | `++ThinkCount`; `Ammo = FMath::Max(0, Ammo - 1)`; the state cycles through the three values with `static_cast` (04 §9) |
+
+### B3. `Public\SPBaselineSpawner.h` / `.cpp`: baseline B0
+
+| Line | What it does, and why |
+|---|---|
+| `USTRUCT() struct FSPWaveEntry { UPROPERTY() TSubclassOf<ASPWaveActor> Class; UPROPERTY() FTransform Transform; };` | One actor of a wave. `USTRUCT` + `UPROPERTY` so arrays of it can be `UPROPERTY` too (GC sees the class pointers, though native classes are never collected). `TSubclassOf<ASPWaveActor>` is a `UClass*` that only accepts subclasses of `ASPWaveActor` (06 §11) |
+| `UCLASS() class USPBaselineSpawner : public UObject` | A plain `UObject`, owned by the director. **Design change in S1** (02 §4.2, §15): planned as a tickable subsystem, but two tickable subsystems have no guaranteed tick order (new tickables wait in a `TMap`, `Public/Tickable.h:62`, `Private/Tickable.cpp:66–92`). Driven by the director, a request and its work always share a frame |
+| `RequestWave(TConstArrayView<FSPWaveEntry> Entries)` | `TConstArrayView` is a read-only view of someone else's array (pointer + count, no copy, 06 §11). The entries are appended to `Pending` and spawned on the next `RunFrame` |
+| `class AActor; class ASPWaveActor; class UWorld;` | Forward declarations: the header only names these types (a pointer, a reference, a template argument), so it doesn't include their headers (04 §1). **Added by the S1 code review:** `AActor` used to arrive only through an indirect engine include |
+| `RunFrame(UWorld& World)` | Called once per frame by the director. A reference, not a pointer: the director always has a world, so there is nothing to null-check (04 §10) |
+| `const uint64 Start = FPlatformTime::Cycles64();` … `ToMilliseconds64(Cycles64() - Start)` | The same high-resolution clock SpawnPacer will use (06 §12), around exactly the engine calls. Equal measurement cost in every configuration (02 §9) |
+| `CSV_CUSTOM_STAT(SPBaseline, WorkMs, WorkMs, ECsvCustomStatOp::Set);` (and `Spawned`, `Destroyed`, `Live`) | One value per frame per stat, never per actor (a stat costs about 50 ns, measured by UE5-UpdateBudget). `Set` = this frame's value (06 §10) |
+| `Parameters.SpawnCollisionHandlingOverride = AlwaysSpawn` | The seed fixes every position; a collision test must never move or reject an actor, or the configurations would spawn different waves |
+| `World.SpawnActor<ASPWaveActor>(Entry.Class, Entry.Transform, Parameters)` | **B0:** construction, registration, construction script and BeginPlay, all inside this call (01b #1–2). The template returns the right type, or null on failure |
+| `LiveBefore`, `Live.Reserve(...)`, `return Live.Num() - LiveBefore;` | One allocation for the whole wave; the number spawned is how much `Live` grew (simplify pass: no separate counter) |
+| `if (IsValid(Actor) && Actor->Destroy())` | `IsValid`: something else may have destroyed it already (level teardown, gameplay). `Destroy()` is the actor-side call of `UWorld::DestroyActor` (06 §8); it returns whether the actor is now being destroyed |
+| `UPROPERTY(Transient) TArray<TObjectPtr<AActor>> Live;` | GC-visible references to the live wave. `Transient`: never saved |
+
+### B4. `Public\SPBenchmarkSubsystem.h` / `.cpp`: the director
+
+| Line | What it does, and why |
+|---|---|
+| `UCLASS() class USPBenchmarkSubsystem : public UTickableWorldSubsystem` | A world subsystem has exactly the world's lifetime, and the project has no authored map to place a director in (UE5-UpdateBudget made the same choice). Tickable, because it advances the script every frame (06 §14). **Changed in S1** from the planned plain world subsystem |
+| The header comment (timeline, command line) | The run's contract in one place: the events cut the analysis windows of 01 §6.3 |
+| `NotifyActorReady() { ++ReadyThisWave; }` | Inline: it is called once per actor per wave |
+| `DoesSupportWorldType` → Game or PIE | The default also creates world subsystems in editor worlds (`Private/Subsystems/WorldSubsystem.cpp:29–32`) |
+| `struct FRunSettings`, `enum class ERunPhase`, `enum class ECycleStep`, `struct FWaveRecord` | Private, plain types: nothing outside the class needs them, so they aren't reflected (04 §8) |
+| `UPROPERTY(Transient) TArray<FSPWaveEntry> Wave;` | The seeded wave, requested unchanged in every cycle |
+| `UPROPERTY(Transient) TObjectPtr<USPBaselineSpawner> Baseline;` / `Camera` | Owned objects: `UPROPERTY` keeps them alive and GC-visible |
+| `CSV_DEFINE_CATEGORY(SPBench, true);` | The CSV category of the script's events; `true` = enabled by default (06 §10) |
+| `ReadRunSettings()` with `FParse::Value(CommandLine, TEXT("SPWaveSize="), Read.WaveSize)` … | Reads `-Name=value` pairs (06 §13). Missing values keep their defaults. `FParse::Param(…, TEXT("SPExit"))` reads a bare flag. `FPaths::MakeValidFileName(Read.RunTag, TEXT('_'))` (`Core/Public/Misc/Paths.h:696`) keeps the tag a plain file name, so it can't write outside `Saved\SPRuns` (code review) |
+| `ValidateRunSettings()` | Refuses: a configuration not implemented yet; a wave above `MaxWaveSize` (20,000, a typo guard); no waves; a negative warm-up; and any timing where a step doesn't follow the previous one or the despawn and GC fall outside their own cycle (`Life > 0`, `GCAfter ≥ 0`, `Life + GCAfter < Cycle`; the code review found that a negative `GCAfter` used to pass). A refused run logs an `Error:` |
+| `QuitRun(SPBench::InvalidRunExitCode)` on a refused run | With `-SPExit`, a refused run quits at once with **exit code 2** (`FPlatformMisc::RequestExitWithStatus`, `Core/Public/GenericPlatform/GenericPlatformMisc.h:1096`), so a batch doesn't wait for its timeout (code review) |
+| `OnWorldBeginPlay` | Runs once the world starts play, before actors begin play (`Private/World.cpp:6167, 6174`). No `-SPWaveSize` means no workload: a normal empty map |
+| `FindConsoleVariable(TEXT("sp.Demo.BeginPlayWork"))` → `Set(Settings.Work, ECVF_SetByCommandline)` | Applies `-SPWork=` to the brain's cvar, and reads back the value actually in effect for the metadata (06 §13) |
+| `NewObject<USPBaselineSpawner>(this)` | Creates the spawner with the director as its outer |
+| `InWorld.SpawnActor<ACameraActor>(Location, Rotation)` | The fixed camera (06 §14) |
+| `CSV_METADATA(TEXT("SPConfig"), …)` … | The run's settings and the wave hash go into the CSV file itself, so every capture is self-describing |
+| `BuildWave()`: `Crates = Count * 30 / 100`, `Grunts = Count * 19 / 100`, `Bosses = Min(Count − Crates − Grunts, Max(1, Count * 1 / 100))`, `Drones` = the rest | Integer arithmetic: for 500, exactly 250 / 150 / 95 / 5. Rounding goes to the cheapest class (drones), so the heavy classes are never over-weighted, and a small test wave still has one boss (code review: the remainder used to go to bosses, 10% of a 10-actor wave) |
+| `Wave.AddDefaulted_GetRef().Class = Class;` | Appends a default entry and sets its class. (A brace initialiser was avoided: whether a `USTRUCT` with `GENERATED_BODY()` is an aggregate isn't something to rely on) |
+| `FRandomStream Random(Settings.Seed);` + Fisher–Yates loop with `Random.RandRange(0, Index)` | A seeded, private random stream (06 §13): same seed, same order and positions. Fisher–Yates gives every permutation the same probability |
+| Grid: `Columns = CeilToInt32(Sqrt(Count))`, `Rows = (Count + Columns − 1) / Columns`, each centred separately; 2 m cells, ±0.5 m jitter, random yaw | A block centred in front of the camera. Rows are counted separately because the last row may be partly filled (500 actors: 23 columns, 22 rows; the code review found the block used to be off-centre) |
+| `Hash = FCrc::StrCrc32(*Class->GetName(), Hash); Hash = FCrc::TypeCrc32(FVector3f(Location), Hash); …` | A running CRC over the class name, position and yaw of every entry: chaining equals one CRC over the whole list, without a buffer. Two runs with the same seed must print the same hash (the S1 check) |
+| `UpdateCamera()` → `SetViewTarget(Camera)` every frame | A pawn possessed later would take the view back; re-applying is cheap |
+| `StepScript(SecondsInCapture)`: `InCycle = SecondsInCapture - CurrentCycle * CycleSeconds` | Time inside the current 12 s cycle. A small state machine (`NextStep`) fires each step once, when its time has come |
+| `RequestWave` step | Opens a `FWaveRecord` (frame from `GFrameCounter`, time), resets the ready count, queues the wave, and fires `CSV_EVENT(SPBench, TEXT("WaveRequested"))` |
+| `Despawn` step | At `LifeSeconds`: queues the removal, fires `DespawnRequested` |
+| `ForceGC` step | At `LifeSeconds + GCAfterSeconds`: `GEngine->ForceGarbageCollection(true)`. This only arms a full purge, `Private/UnrealEngine.cpp:2136–2140`; the engine runs it at its next garbage-collection check, which is why the GC window spans three frames (01 §6.3) |
+| `CycleDone` step | At the end of the cycle: next cycle |
+| `Tick`: phases `WarmUp` → `Capture` → `Done` | `BenchStart` after the warm-up; `BenchEnd` after the last cycle; the report one frame later (outside the capture); `QuitRun(0)` three frames later, so the CSV profiler has finished writing (as in UE5-UpdateBudget) |
+| `QuitRun(uint8 ExitCode)` | The one place that decides whether to quit: only with `-SPExit`, only once, and only in Game worlds (in PIE it would close the editor; code review). `RequestExitWithStatus(bForce, ExitCode, …)` with `bForce = ExitCode != 0`. **Found by the first S1 run (09 S1-c):** a clean exit on Windows only posts a quit message (`Core/Private/Windows/WindowsPlatformMisc.cpp:1516–1519`) and the process returns the engine's own error level (`Launch/Private/Launch.cpp:146–203`), so code 2 arrived as 0. A forced exit flushes the log and calls `TerminateProcess` with the code (`WindowsPlatformMisc.cpp:1501–1514`). Nothing needs saving in a refused run, so forcing is safe there; a finished run still exits cleanly with 0 |
+| `Baseline->RunFrame(*World);` after the script step | The spawner works in the same frame as the request |
+| Completion checks after `RunFrame` | `Record.Ready` is copied every frame, so an incomplete wave still reports how many actors became ready (code review). `WaveComplete` fires once, when every actor has reported ready and the record has no completion time yet; `DespawnComplete` once, when nothing is pending or live and the record has no completion frame yet. The record itself is the "already sent" flag (simplify pass: two separate booleans removed). Checked after the spawner ran, so a wave that finished this frame is reported this frame (B0: latency 0) |
+| `WriteRunReport()` → `Saved/SPRuns/<RunTag>.csv` | One line per wave: request and completion frames, latency in frames and in simulated ms, despawn frames, GC frame. The batch script moves it next to the capture |
+| `GetStatId()` → `RETURN_QUICK_DECLARE_CYCLE_STAT(USPBenchmarkSubsystem, STATGROUP_Tickables)` | Required by `FTickableGameObject`: names the tickable's cost in the stats system |
+
+### B5. `Config\DefaultGame.ini` (S1 addition)
+
+`[/Script/UnrealEd.ProjectPackagingSettings] +DirectoriesToAlwaysCook=(Path="/Engine/BasicShapes")`: the demo meshes are referenced only from C++ (`ConstructorHelpers`). No map references them, so without this line the cooker would leave them out and packaged wave actors would be invisible (UE5-UpdateBudget hit the same).

@@ -88,3 +88,71 @@ combined |= core_mask       (bitwise OR: switch on the bits of this core, keep t
 - `|` (OR) adds members; `&` (AND) keeps only members in both.
 - Hex is used because each hex digit is exactly 4 bits: `0xFFFF` is 16 ones.
 - **In our code:** `Tools\perf_cores.py` ORs together the masks of the cores with the highest efficiency class (the P-cores), giving `0xFFFF` on this laptop (05 A9).
+
+---
+
+## Added in step S1
+
+## 7. Classes, inheritance, `virtual` and `override`
+
+```cpp
+struct Animal       { virtual void Speak() {} virtual ~Animal() = default; };
+struct Dog : Animal { void Speak() override { /* bark */ } };
+```
+- `class Dog : public Animal` means a dog *is an* animal: it has everything the base has and may replace `virtual` functions.
+- A `virtual` call is decided at run time through a hidden table of function pointers (the vtable). `override` asks the compiler to check that a base function really is being replaced, so a typo becomes an error.
+- **In our code:** `ASPDrone : public ASPWaveActor : public AActor`; `ASPDrone` overrides `BeginPlay` and `Tick`, and calls `Super::BeginPlay()` first so the engine's own work still runs (`Super` is a typedef UHT adds for the base class).
+
+## 8. Namespaces, `constexpr` and named constants; `enum class`
+
+```cpp
+namespace Grid { constexpr double Spacing = 200.0; }   // compile-time, typed, named, scoped
+enum class EState : uint8 { Idle, Engaging };           // scoped: EState::Idle; no silent int conversion; 1 byte
+```
+- **In our code:** `SPWave::PartRingRadius`, `SPBench::GridSpacing`, `SPBrain::ThinkInterval`: no magic numbers, each with its reason next to it. `ESPBrainState`, `ERunPhase`, `ECycleStep` are scoped enums.
+
+## 9. `static_cast` and integer division
+
+```cpp
+const int32 Drones = Count * 50 / 100;   // integer maths: 500 * 50 / 100 = 250 exactly; 7 * 50 / 100 = 3 (truncates)
+const uint8 Next = (static_cast<uint8>(State) + 1) % 3;   // explicit, visible conversion of an enum to its number
+```
+- **In our code:** the wave's class counts (the remainder goes to bosses, so the total is always the wave size); the brain's state cycle.
+
+## 10. References vs pointers
+
+```cpp
+void A(UWorld* World) { if (World) { … } }   // may be null: check it
+void B(UWorld& World) { … }                   // can't be null: no check needed
+```
+- **In our code:** `USPBaselineSpawner::RunFrame(UWorld& World)` takes a reference, because the director always has a world. Functions that may get "nothing" take pointers and check them (`if (USPBenchmarkSubsystem* Bench = World->GetSubsystem<…>())`).
+
+## 11. A "sink" keeps measured work alive
+
+```cpp
+float Sink = 0; for (...) Sink = f(Sink);   // if Sink were never used, the optimiser could delete the loop
+Member = Sink;                              // storing it makes the result observable, so the loop must run
+```
+- **In our code:** `USPWaveBrainComponent::WorkSink`. Each iteration also depends on the previous one, so the loop can't be vectorised: its cost stays proportional to the iteration count, which is what calibration needs.
+
+## 12. `static` locals
+
+```cpp
+Widget& Get() { static Widget Instance; return Instance; }   // built once, on the first call
+```
+- **In our code:** `static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(...)` in each wave class's constructor: the asset lookup runs once per class (on its class default object), not once per spawned actor.
+
+## 13. Lambdas and what they capture
+
+```cpp
+auto Add = [this](TSubclassOf<ASPWaveActor> Class, int32 Number) { … Wave.AddDefaulted_GetRef() … };
+```
+- The capture list `[this]` lets the lambda use the object's members; it copies only a pointer, so the object must outlive the lambda (here the lambda is used and discarded inside one function).
+- **In our code:** `BuildWave` uses one small lambda to add N entries of a class, instead of four copies of the same loop.
+
+## 14. `const` member functions
+
+```cpp
+int32 GetAmmo() const { return Ammo; }   // promises not to change the object; callable on const objects
+```
+- **In our code:** every getter (`GetBrain`, `GetHealth`, `GetNumLive`, `IsIdle`) and `WriteRunReport() const`.

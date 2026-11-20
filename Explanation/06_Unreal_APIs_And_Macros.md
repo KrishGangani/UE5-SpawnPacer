@@ -99,3 +99,118 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
    - Packaging a configuration the engine distribution can't build (Test on a launcher engine).
 7. **Example.** `Tools\package.bat` (05 A8).
 8. **In this project.** Phase 4: 516 packages cooked with 0 errors and 0 warnings; the archive is `Build\Windows\` (09 F-3).
+
+---
+
+## APIs added in step S1 (workload and baseline B0)
+
+| # | API | First used in |
+|---|---|---|
+| 6 | `UCLASS` / `USTRUCT` / `UENUM` / `UPROPERTY` / `GENERATED_BODY` | S1 |
+| 7 | `CreateDefaultSubobject`, `SetupAttachment`, `ConstructorHelpers::FObjectFinder` | S1 |
+| 8 | `UWorld::SpawnActor` (plain), `FActorSpawnParameters`, collision profiles, `AActor::Destroy` | S1 |
+| 9 | `FTimerManager::SetTimer` / `ClearTimer` | S1 |
+| 10 | CSV profiler: `CSV_DEFINE_CATEGORY`, `CSV_CUSTOM_STAT`, `CSV_EVENT`, `CSV_METADATA` | S1 |
+| 11 | `TObjectPtr`, `TSubclassOf`, `TArray`, `TConstArrayView` | S1 |
+| 12 | `FPlatformTime::Cycles64` / `ToMilliseconds64` | S1 |
+| 13 | `FParse`, `TAutoConsoleVariable` / `IConsoleManager`, `FRandomStream`, `FCrc` | S1 |
+| 14 | `UTickableWorldSubsystem`, `ACameraActor` + `SetViewTarget`, `GFrameCounter`, `ForceGarbageCollection`, `RequestExit` | S1 |
+
+## 6. `UCLASS` / `USTRUCT` / `UENUM` / `UPROPERTY` / `GENERATED_BODY`
+
+1. **What it is.** Markers that Unreal Header Tool (UHT) reads before the C++ compiler runs; UHT writes the `.generated.h` code that registers the type with the reflection system.
+2. **Why it exists.** C++ has no run-time type information rich enough for Unreal's needs: garbage collection (which pointers does an object hold?), the editor's details panel, Blueprint, saving, networking.
+3. **How it works.** `UCLASS()` before a `UObject` subclass, `USTRUCT()` before a struct, `UENUM()` before an enum; `GENERATED_BODY()` inside pastes the generated members. `UPROPERTY(...)` marks a member reflected; specifiers decide who may see or edit it (`VisibleAnywhere`, `EditDefaultsOnly`, `VisibleInstanceOnly`, `Transient`).
+4. **When to use it.** Any `UObject` pointer member (so GC sees it), anything the editor, Blueprint or the reset verifier (S8) must see.
+5. **When not to.** Plain bookkeeping no other system needs (our `FRunSettings`, `WorkSink`, the drone's `Origin`): reflection costs memory and compile time.
+6. **Common mistakes.** The `.generated.h` include not last; a raw `UObject*` member without `UPROPERTY` (GC can't see it and may free the object); `EditAnywhere` on default-subobject pointers (lets a designer break the actor).
+7. **Example.** `UPROPERTY(VisibleInstanceOnly, Category = "SpawnPacer Demo") float Health = 100.0f;`
+8. **In this project.** `ASPWaveActor` is `UCLASS(Abstract)`; the brain's gameplay state is `UPROPERTY` on purpose (the S8 verifier compares reflected state); `FSPWaveEntry` is a `USTRUCT` so the wave list can be a `UPROPERTY` array.
+
+## 7. `CreateDefaultSubobject`, `SetupAttachment`, `ConstructorHelpers::FObjectFinder`
+
+1. **What it is.** Constructor-time helpers: create a component as part of the class default object; record its attachment parent; find an asset.
+2. **Why it exists.** An actor's components are defined once, on the class default object (CDO), and copied into each spawned instance by `NewObject` (01b §2.1).
+3. **How it works.** `CreateDefaultSubobject<T>(Name)` creates a subobject with a fixed name (unique per owner). `SetupAttachment(Parent)` stores the parent; the real attachment is made at registration. `ConstructorHelpers::FObjectFinder<T>` loads an asset by path, and is only allowed inside a constructor.
+4. **When to use it.** Components every instance of a class has. Assets referenced from C++ defaults.
+5. **When not to.** Components added at run time (`NewObject` + `RegisterComponent`); `AttachToComponent` belongs to run time, not constructors.
+6. **Common mistakes.** Two subobjects with the same name; a **non-static** `FObjectFinder` (an asset lookup in every instance's constructor); one static finder in a helper shared by several classes (the first class's asset wins); forgetting to cook assets referenced only from C++.
+7. **Example.** `static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube")); Mesh->SetStaticMesh(Cube.Object);`
+8. **In this project.** Each wave class keeps its own static finders and passes the meshes to `BuildBody` (05 B1); parts are named `Part00`, `Part01`, ….
+
+## 8. `UWorld::SpawnActor` (plain), `FActorSpawnParameters`, collision profiles, `AActor::Destroy`
+
+1. **What it is.** The engine's one way to create an actor in a world (`Private/LevelActor.cpp:456`), its options struct (`Classes/Engine/World.h:420–519`), named collision presets (`Classes/Engine/CollisionProfile.h:189–196`), and the actor-side destroy call.
+2. **Why it exists.** An actor must be constructed, added to a level, registered, constructed by its scripts and begun play in a fixed order (01b §2).
+3. **How it works.** A plain `SpawnActor` does all of that before it returns (01b #1–2). `SpawnCollisionHandlingOverride = AlwaysSpawn` skips the encroachment test. `Destroy()` calls `UWorld::DestroyActor`: EndPlay, unregister every component, mark as garbage (`LevelActor.cpp:839–1060`); memory is freed by a later GC.
+4. **When to use it.** A few actors per frame, or when the whole cost must land now.
+5. **When not to.** Hundreds in one frame: that is the hitch this project measures (B0).
+6. **Common mistakes.** Ignoring a null return; using a collision method that silently moves or rejects actors in a benchmark; treating `Destroy()` as freeing memory.
+7. **Example.** `World.SpawnActor<ASPWaveActor>(Entry.Class, Entry.Transform, Parameters);`
+8. **In this project.** Baseline B0 in `USPBaselineSpawner` (05 B3); the drone uses `DefaultProjectile`, the crate `BlockAllDynamic`, enemies `Pawn`.
+
+## 9. `FTimerManager::SetTimer` / `ClearTimer`
+
+1. **What it is.** The world's timer service (`Public/TimerManager.h`).
+2. **Why it exists.** Gameplay often needs "do this every N seconds" without a per-frame tick.
+3. **How it works.** `SetTimer(Handle, Object, &Class::Function, Rate, bLoop)` stores a delegate bound to the object; the manager ticks once per frame and fires due timers. `ClearTimer(Handle)` removes one; `ClearAllTimersForObject(Object)` removes all of an object's (291).
+4. **When to use it.** Low-frequency, time-based work.
+5. **When not to.** Per-frame work (use a tick), or work that must happen at an exact frame.
+6. **Common mistakes.** Assuming EndPlay or destroy clears timers: the engine doesn't (01b #11). A pooled actor's timer keeps firing in its next life.
+7. **Example.** `World->GetTimerManager().SetTimer(ThinkTimer, this, &USPWaveBrainComponent::Think, 0.5f, true);`
+8. **In this project.** The enemies' 0.5 s think timer, cleared by the brain in its own `EndPlay` (05 B2); the pool will clear all timers unconditionally (S7).
+
+## 10. CSV profiler: `CSV_DEFINE_CATEGORY`, `CSV_CUSTOM_STAT`, `CSV_EVENT`, `CSV_METADATA`
+
+1. **What it is.** Macros that write one row per frame to a CSV capture (`Core/Public/ProfilingDebugging/CsvProfiler.h:50, 56, 85, 155`).
+2. **Why it exists.** Frame-by-frame numbers for whole runs, cheap enough for packaged Development builds, readable by scripts.
+3. **How it works.** `CSV_DEFINE_CATEGORY(Name, bOnByDefault)` once per `.cpp`; `CSV_CUSTOM_STAT(Category, Stat, Value, ECsvCustomStatOp::Set)` sets this frame's value of a column `Category/Stat`; `CSV_EVENT(Category, Text)` adds `Category/Text` to the frame's `EVENTS` column; `CSV_METADATA(Key, Value)` adds a key to the file's last row. The capture starts and stops on events (`-csvStartOnEvent=`, `-csvStopOnEvent=`, 01b §3).
+4. **When to use it.** Per-frame totals and run markers.
+5. **When not to.** Per item inside a hot loop (about 50 ns per call, UE5-UpdateBudget's measurement); fine-grained timing (use Insights).
+6. **Common mistakes.** Publishing per actor; reading the first header row instead of the end header (columns first written mid-capture exist only there, 01b B-2).
+7. **Example.** `CSV_CUSTOM_STAT(SPBaseline, WorkMs, WorkMs, ECsvCustomStatOp::Set);`
+8. **In this project.** `SPBaseline/*` per frame, `SPBench/*` events cut the analysis windows (01 §6.3), metadata makes every capture self-describing.
+
+## 11. `TObjectPtr`, `TSubclassOf`, `TArray`, `TConstArrayView`
+
+1. **What it is.** Engine containers and pointer types.
+2. **Why it exists.** `TObjectPtr<T>` is UE5's pointer type for `UPROPERTY` object members (access tracking in editor builds, a plain pointer in packaged builds); `TSubclassOf<T>` is a `UClass*` restricted to subclasses of `T`; `TArray` is the dynamic array; `TConstArrayView` is a read-only pointer-plus-count view.
+3. **How it works.** `TSubclassOf` checks the class on assignment; `TConstArrayView` converts implicitly from a `TArray`; `TArray::Reserve` allocates once; `Reset` empties but keeps the allocation; `AddDefaulted_GetRef` appends and returns a reference.
+4. **When to use it.** `TObjectPtr` for every reflected object member; views for passing arrays without copying.
+5. **When not to.** A view must not outlive the array it points into.
+6. **Common mistakes.** Storing a `TConstArrayView` as a member; keeping references into a `TArray` while adding to it (it may reallocate).
+7. **Example.** `void RequestWave(TConstArrayView<FSPWaveEntry> Entries) { Pending.Append(Entries.GetData(), Entries.Num()); }`
+8. **In this project.** `Live`, `Brain`, `Camera`, `Baseline` are `TObjectPtr`; `FSPWaveEntry::Class` is a `TSubclassOf<ASPWaveActor>`.
+
+## 12. `FPlatformTime::Cycles64` / `ToMilliseconds64`
+
+1. **What it is.** The CPU's high-resolution counter and its conversion (`Core/Public/GenericPlatform/GenericPlatformTime.h:202`).
+2. **Why it exists.** Timing short pieces of work with sub-microsecond resolution.
+3. **How it works.** Two reads of a monotonic counter; the difference times the counter period.
+4. **When to use it.** Timing a section of game-thread work by our own code.
+5. **When not to.** Simulated time (use world time); overlapping threads (each thread's time is separate).
+6. **Common mistakes.** Mixing it with `FPlatformTime::Seconds()` differences in one statistic; converting through `float` and losing precision.
+7. **Example.** `const uint64 Start = FPlatformTime::Cycles64(); … ToMilliseconds64(FPlatformTime::Cycles64() - Start);`
+8. **In this project.** Every spawner (baselines now, SpawnPacer from S5) times its own work with it, so the measurement cost is equal (02 §9).
+
+## 13. `FParse`, `TAutoConsoleVariable` / `IConsoleManager`, `FRandomStream`, `FCrc`
+
+1. **What it is.** Command-line parsing, console variables, a seeded random stream, CRC checksums.
+2. **Why it exists.** Repeatable, scriptable runs: settings from the command line, one tunable value for all brains, the same random wave for the same seed, a hash to prove it.
+3. **How it works.** `FParse::Value(CommandLine, TEXT("Key="), Out)` reads `-Key=value`; `FParse::Param` a bare flag. `TAutoConsoleVariable<int32>` registers a cvar at start-up; `IConsoleManager::Get().FindConsoleVariable(Name)->Set(Value, ECVF_SetByCommandline)` sets it from code. `FRandomStream(Seed)` produces the same sequence for the same seed, independent of `FMath::Rand`. `FCrc::StrCrc32` / `TypeCrc32(Value, Crc)` chain a checksum.
+4. **When to use it.** Anything a benchmark must vary or reproduce.
+5. **When not to.** `ECVF_Cheat` for benchmark switches (can't be set from config or `-dpcvars`, UE5-UpdateBudget 01b #11).
+6. **Common mistakes.** `FMath::Rand` in a benchmark (global, shared state); a hash over values that differ by floating-point noise.
+7. **Example.** `FRandomStream Random(Settings.Seed); Wave.Swap(Index, Random.RandRange(0, Index));`
+8. **In this project.** `-SP…=` settings, `sp.Demo.BeginPlayWork`, the seeded wave and its hash (05 B4).
+
+## 14. `UTickableWorldSubsystem`, `ACameraActor` + `SetViewTarget`, `GFrameCounter`, `ForceGarbageCollection`, `RequestExit`
+
+1. **What it is.** A world subsystem that also ticks (`Engine/Public/Subsystems/WorldSubsystem.h:80`); a camera actor and the player controller's view target; the global frame counter; the GC trigger (`Classes/Engine/Engine.h:2828`); the exit request (`Core/Public/GenericPlatform/GenericPlatformMisc.h:1086`).
+2. **Why it exists.** A per-world service with per-frame work; a fixed viewpoint; frame numbering for the report; a scripted GC; leaving when a run is done.
+3. **How it works.** World subsystems are created with the world; `DoesSupportWorldType` filters world types (default Game, Editor and PIE, `Private/Subsystems/WorldSubsystem.cpp:29–32`); `OnWorldBeginPlay` runs before actors begin play (`Private/World.cpp:6167, 6174`); `Tick` runs once per frame after `TG_PostPhysics` (`Private/LevelTick.cpp:1778–1821`) and needs `GetStatId`. `ForceGarbageCollection(true)` only arms a full purge (`Private/UnrealEngine.cpp:2136–2140`). `RequestExit(false, CallSite)` asks the engine to quit at the end of the frame.
+4. **When to use it.** Per-world managers with no map placement.
+5. **When not to.** Two tickable subsystems that must run in a fixed order: there is no guaranteed order (new tickables wait in a `TMap`, `Public/Tickable.h:62`) — drive one from the other.
+6. **Common mistakes.** Forgetting `DoesSupportWorldType` (the subsystem also runs in editor worlds); expecting `ForceGarbageCollection` to collect immediately.
+7. **Example.** `RETURN_QUICK_DECLARE_CYCLE_STAT(USPBenchmarkSubsystem, STATGROUP_Tickables);`
+8. **In this project.** The director (05 B4).

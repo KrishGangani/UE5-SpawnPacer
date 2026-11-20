@@ -4,11 +4,11 @@
 
 **Domain:** Frame-time consistency · actor lifecycle · **Difficulty:** ★★★½☆ · **Engine:** UE 5.8.4
 
-> **Status: in progress. There are no results yet.** Phases 1–4 are done: the problem, the verified research, the final architecture and the UE project foundation. Sections marked *(pending)* are filled in only from real measurements, in the phase named. The success criteria below are **targets fixed before any system code exists, not results**.
+> **Status: in progress. There are no results yet.** Phases 1–4 are done: the problem, the verified research, the final architecture and the UE project foundation. Phase 5 has started: the demo workload and the plain-`SpawnActor` baseline exist (S1); SpawnPacer itself is built only after the baselines are captured. Sections marked *(pending)* are filled in only from real measurements, in the phase named. The success criteria below are **targets fixed before any system code exists, not results**.
 
 | Phase | 1 Problem | 2 Research | 3 Architecture | 4 Foundation | 5 Implementation | 6 Explanation | 7 Testing | 8 Profiling | 9 Review | 10 Portfolio |
 |---|---|---|---|---|---|---|---|---|---|---|
-| State | ✓ | ✓ | ✓ final | ✓ | — (next: S1 of 9) | ongoing | — | — | — | — |
+| State | ✓ | ✓ | ✓ final | ✓ | in progress (S1 of 9 done) | ongoing | — | — | — | — |
 
 ---
 

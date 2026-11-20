@@ -38,3 +38,22 @@
 | **Trusting a reset nobody checked** | Reset code covers what its author remembered | The verifier compares with the fresh snapshot (02 §11) | SC5 soak (S8) |
 | **A verifier that reports nothing because it checks nothing** | An empty comparison passes everything | Seeded defects must be caught (SC5) | S8 |
 | **A pool cap below the live population** | Release silently destroys | Count `Destroyed instead of parked` in telemetry | S7 |
+
+## Game module: workload, director and baseline B0 (step S1)
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| ⚠ caught (design): **two tickable subsystems assumed to tick in a fixed order** | A request is served this frame in one run and next frame in another; latency off by one | Drive one object from the other: the director calls `USPBaselineSpawner::RunFrame()` itself (02 §4.2) | Log `GFrameCounter` at the request and at the spawn |
+| ⚠ caught (code review): **"ready" sent from a component's BeginPlay** | The actor's own BeginPlay work runs after the wave counts as complete | Notify from the actor's `BeginPlay`, after `Super::BeginPlay()` and a hook, and mark it `final` (05 B1) | Read `AActor::BeginPlay`: component BeginPlays run inside it (`Actor.cpp:4808–4845`) |
+| ⚠ caught (code review): **a validation that accepts nonsense timing** (a negative `-SPGCAfter` passed) | A capture whose windows overlap, which still looks valid | Check every step's order, not only the sum | Feed the validator edge values on purpose |
+| ⚠ caught (simplify): **string formatting in a spawned actor's constructor** | Spawn cost includes work a real class doesn't do | Build subobject names once (`PartNames()`, 05 B1) | Insights: `FString::Printf` under `NewObject` |
+| ⚠ caught (first S1 run): **trusting a clean exit to carry an exit code** | A failed run reports 0 | On Windows, return a failure with a forced exit (`QuitRun`, 05 B4); a clean `RequestExitWithStatus` only posts a quit message | A deliberate invalid run, checking the code it returns (09 S1-c) |
+| ⚠ caught (code review): **a refused benchmark run that idles until its timeout** | A batch stalls for minutes per bad run | Quit at once with a non-zero exit code (`QuitRun(2)`) | Run with an invalid `-SPConfig` and time it |
+| **One shared static `FObjectFinder` in a helper used by several classes** | Every class shows the first class's mesh | Each class keeps its own static finder and passes the mesh in (05 B1) | Look at the packaged game: are the drones spheres? |
+| **A non-static `FObjectFinder`** | Spawn cost includes an asset lookup per actor | `static` local: once per class (04 §12) | Insights: `LoadObject` inside `SpawnActor` |
+| **Measured work the optimiser deletes** | Cost doesn't change with `-SPWork=` | Store the result (`WorkSink`) and make each step depend on the last (04 §11) | Sweep `-SPWork=` in the calibration batch (S2) and check the cost scales |
+| **A collision test that moves or rejects spawns** | Different configurations spawn different waves | `AlwaysSpawn` for the seeded wave | Wave hash and actor count per wave in the run report |
+| **`FMath::Rand` for the wave** | The wave hash differs run to run | A seeded `FRandomStream` | The S1 check: same seed, same hash |
+| **Despawn or GC outside its cycle** | Analysis windows overlap; a GC lands in the next wave's window | `ValidateRunSettings` refuses such a run with an `Error:` | The run's log |
+| **Wave completion counted differently per configuration** | Latency isn't comparable | Every configuration completes through `NotifyActorReady()` at the end of BeginPlay (02 §9) | Compare `ready` in the run report with the wave size |
+| **Expecting `ForceGarbageCollection` to collect now** | The GC frame is the next frame or later | Treat it as "armed"; the GC window is 3 frames (01 §6.3) | CSV: the frame after `GCForced` |
