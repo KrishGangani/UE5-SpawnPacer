@@ -2,7 +2,7 @@
 
 Every number in this project's write-up must trace back to a file in this folder. The method is in [../Explanation/01_Problem_Analysis.md §6–7](../Explanation/01_Problem_Analysis.md). The results, batch by batch, are in [../Explanation/09_Testing_And_Benchmarks.md](../Explanation/09_Testing_And_Benchmarks.md).
 
-**State (2026-11-21):** the S2 calibration batch is done. The baseline batch (B0–B3) follows in S3, before any SpawnPacer system code exists.
+**State (2026-11-21):** the S2 calibration and the S3 baseline batch are done (before any SpawnPacer system code existed). The next batches come with SpawnPacer itself (S5 onwards).
 
 ## Measurement rules
 
@@ -54,4 +54,6 @@ Warm-up:           5 s (pool fill for B3/SPP)     Capture: 3 wave cycles x 12 s 
 
 | Batch | Configs | Runs | Purpose | Summary |
 |---|---|---|---|---|
+| `2026-11-21_035912_baseline` | B0, B1 (K = 14), B2 (2 ms), B3; work 20000 | 4 each + priming | **The baseline matrix** SpawnPacer must beat, captured before SpawnPacer code existed (09 S3) | [summary](Summaries/2026-11-21_035912_baseline_summary.md) |
+| `2026-11-21_040413_spawntimer` | B0 with `-SPSpawnTimer` | 1 | The engine's per-class spawn time (H2), in the run's log | [summary](Summaries/2026-11-21_040413_spawntimer_summary.md) |
 | `2026-11-21_031105_calib` | B0, BeginPlay work 0 / 2000 / 4000 / 8000 | 2 each + priming | S2 calibration of the BeginPlay work (chosen: 20000) and the S1 checks (same wave hash in all runs, B0 hitches on every wave) | [summary](Summaries/2026-11-21_031105_calib_summary.md) |

@@ -28,6 +28,9 @@ Rules (documented so every number can be reproduced):
     window therefore takes FrameTime from the rows one later than the other columns (FRAME_TIME_LAG).
   * Hitch counts: frames with FrameTime > 33.3 ms and > 16.7 ms (two 60 Hz frame intervals, one interval).
   * Wave latency: frames from each WaveRequested to the next WaveComplete (0 = the same frame).
+  * Spawn-work frames (SC3): for each spawner's WorkMs column, the frames of a window that did real work
+    (> ACTIVE_WORK_MS; the timer alone costs microseconds), their statistics, and how many exceeded 1.1 x the budget
+    (the run's spbudgetms metadata, 2.0 ms when absent).
 """
 from __future__ import annotations
 
@@ -44,6 +47,8 @@ DEFAULT_COLUMNS = (
     "RenderThreadTime",
     "GPUTime",
     "SPBaseline/WorkMs",
+    "SPBaseline/ConstructMs",
+    "SPBaseline/FinishMs",
     "SpawnPacer/WorkMs",
     "Exclusive/GameThread/ActorSpawning",
     "Exclusive/GameThread/ActorDestroying",
@@ -53,6 +58,9 @@ FRAME_TIME_LAG = 1   # rows: FrameTime of frame N is written in row N + 1 (modul
 HITCH_MS = 33.3
 MISSED_FRAME_MS = 16.7
 BENCH = "SPBench/"
+WORK_COLUMNS = ("SPBaseline/WorkMs", "SpawnPacer/WorkMs")
+ACTIVE_WORK_MS = 0.01       # a frame with less spawner work than this did nothing but read the clock
+BUDGET_TOLERANCE = 1.10     # SC3: work <= 1.1 x budget
 
 csv.field_size_limit(1 << 30)
 
@@ -148,7 +156,7 @@ def window_rows(data: list[list[str]], starts: list[int], length: int, before: b
 
 
 def summarize_window(header: list[str], data: list[list[str]], starts: list[int], length: int,
-                     columns: tuple[str, ...], before: bool = False) -> dict:
+                     columns: tuple[str, ...], before: bool = False, budget_ms: float = 2.0) -> dict:
     """Statistics of each column over a window type's frames, plus the hitch counts on FrameTime (read one row later)."""
     rows = window_rows(data, starts, length, before)
     frame_rows = window_rows(data, starts, length, before, FRAME_TIME_LAG)
@@ -160,6 +168,13 @@ def summarize_window(header: list[str], data: list[list[str]], starts: list[int]
             values = column_values(header, frame_rows if column == "FrameTime" else rows, column)
             if values:
                 result["columns"][column] = summarize(values)
+    for column in WORK_COLUMNS:
+        if column in header:
+            active = [v for v in column_values(header, rows, column) if v > ACTIVE_WORK_MS]
+            if active:
+                stats = summarize(active)
+                stats["over_budget"] = sum(1 for v in active if v > BUDGET_TOLERANCE * budget_ms)
+                result.setdefault("active_work", {})[column] = stats
     if "FrameTime" in header:
         frame_times = column_values(header, frame_rows, "FrameTime")
         result["over_33_3ms"] = sum(1 for v in frame_times if v > HITCH_MS)
@@ -192,9 +207,10 @@ def analyse(path: str, columns: tuple[str, ...], fps: float = 60.0, wave_window:
     waves = event_frames(events, "WaveRequested")
     despawns = event_frames(events, "DespawnRequested")
     gcs = event_frames(events, "GCForced")
+    budget_ms = float(metadata.get("spbudgetms", 2.0) or 2.0)
     windows = {
-        "W": summarize_window(header, data, waves, round(wave_window * fps), columns),
-        "D": summarize_window(header, data, despawns, round(despawn_window * fps), columns),
+        "W": summarize_window(header, data, waves, round(wave_window * fps), columns, budget_ms=budget_ms),
+        "D": summarize_window(header, data, despawns, round(despawn_window * fps), columns, budget_ms=budget_ms),
         "GC": summarize_window(header, data, gcs, gc_frames, columns),
         "PRE": summarize_window(header, data, waves, round(pre_window * fps), columns, before=True),
     }
@@ -233,7 +249,11 @@ def selftest() -> None:
     assert [row[1] for row in window_rows(data, [2], 2, before=True, offset=FRAME_TIME_LAG)] == ["5", "4"]
     clipped = window_rows(data, [8], 5)                                            # frames 8, 9 only
     assert len(clipped) == 2
-    print("selftest: OK (percentiles, summary, event parsing, windows, FrameTime lag, hitch counts and latency match hand-worked values)")
+    work_header = ["EVENTS", "FrameTime", "SPBaseline/WorkMs"]
+    work = [[data[i][0], str(t), str(w)] for i, (t, w) in enumerate(zip(times, [0, 0, 1.0, 2.5, 0.005, 0, 0, 0, 0, 0]))]
+    active = summarize_window(work_header, work, [2], 3, ("FrameTime",))["active_work"]["SPBaseline/WorkMs"]
+    assert active["n"] == 2 and active["max"] == 2.5 and active["over_budget"] == 1   # 0.005 is idle; 2.5 > 2.2
+    print("selftest: OK (percentiles, summary, event parsing, windows, FrameTime lag, hitch counts, active work and latency match hand-worked values)")
 
 
 def main(argv: list[str]) -> int:

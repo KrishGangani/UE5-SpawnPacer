@@ -110,6 +110,65 @@ Batch **`2026-11-21_031105_calib`** (job `20261121_025813_920cda`): B0 only, Beg
 - `simplify` (self-review, four angles): events parsed once per capture (efficiency). Nothing to reuse beyond the copied functions; no altitude issue.
 - The calibration summary was recomputed with the reviewed tools; every number in S2-c is unchanged.
 
+
+---
+
+## Step S3 · Baselines B1–B3 and the baseline batch (2026-11-21)
+
+Job `20261121_032954_d2b651`: build, package, then batch **`2026-11-21_035912_baseline`** (B0, B1, B2, B3 × 4 interleaved runs + 1 priming run; wave size 500, 3 waves, BeginPlay work 20000, B1 cap K = 14, B2 budget 2.0 ms) and batch **`2026-11-21_040413_spawntimer`** (one B0 run with the engine's `spawnactortimer`). Same environment as S1/S2 (`applied_mask` 0xFFFF, AC power, power plan Turbo). **This is the bar SpawnPacer must clear, captured before any SpawnPacer code exists.**
+
+| # | Check | Result |
+|---|---|---|
+| S3-a | **Build** | ✅ Editor and game Development targets `Result: Succeeded`, **0 errors, 0 warnings**; package `BUILD SUCCESSFUL`, cook 0 errors, 0 warnings |
+| S3-b | **Every run valid** | ✅ 17 runs + 1: all exit 0, 3 waves each, every wave completed, 0 log errors, 0 log warnings; no run excluded from the summary |
+| S3-c | **Calibration confirmed** (S2-c) | ✅ B0's wave frame at work 20000: max **84.2 ms** [75.6–97.6], above the 66.7 ms target in every run |
+
+**The baseline matrix** (median across 4 runs [min–max]; ms; summary [2026-11-21_035912_baseline](../Benchmarks/Summaries/2026-11-21_035912_baseline_summary.md)):
+
+| Config | W max FrameTime | Frames > 33.3 ms (W, sum of 4 runs) | Spawn frames / run | Spawn work p99 | Spawn work max | Spawn frames > 1.1 × 2 ms | Wave latency (frames) | D max FrameTime | GC max FrameTime |
+|---|---|---|---|---|---|---|---|---|---|
+| B0 plain `SpawnActor` | 84.17 [75.59–97.56] | **12** (every wave) | 3 | 79.52 | 79.61 | 12 / 12 | 0 | 12.91 | 9.01 |
+| B1 deferred, 14 per frame | 8.81 [7.95–11.33] | 0 | 108 | 4.40 [3.83–4.85] | 4.63 [4.35–5.71] | **320 / 432 (74%)** | 35 | 5.48 | 8.95 |
+| B2 time cap 2 ms, checked between items | 7.57 [6.40–8.07] | 0 | 132 | 2.60 [2.51–2.69] | 2.75 [2.64–2.86] | **197 / 528 (37%)** | 42 [41–43] | 8.07 | 8.93 |
+| B3 simple pool | 17.37 [16.53–17.84] | 0 | 3 | 10.87 | 10.92 [9.85–11.43] | 12 / 12 | 0 | 13.12 | 8.91 |
+
+The pre-wave median is 3.1 ms in every configuration and the wave-window median 4.0–4.2 ms, so the scene is light and the spawn work dominates the spikes.
+
+**Hypotheses after the baseline batch:**
+
+| # | Hypothesis | Status |
+|---|---|---|
+| H1 | Registration dominates spawn cost | **Supported, partly.** In B1, `SpawnActor` with `bDeferConstruction` (construction **and** native registration) is **57%** of the spawn time in every run (145–177 ms against 110–129 ms for `FinishSpawning`, over 3 waves). `FinishSpawning` includes the enemies' calibrated BeginPlay work (about 33 ms per wave), so without it construction + registration would dominate further. Separating construction from registration needs the per-stage timing of S5 |
+| H2 | Cost grows with component count | **Supported.** Engine `spawnactortimer`, per class: drone (1 part) 0.046 ms, crate (3 colliding parts) 0.110 ms, grunt (6 parts, + ~0.33 ms BeginPlay work) 0.446 ms, boss (24 parts, + the same work) 0.648 ms. Without the BeginPlay work, about 0.12 ms for 6 parts and 0.32 ms for 24: close to linear, about 13–16 µs per visual part; colliding parts cost about twice as much |
+| H3 | A count cap fails with mixed classes | **Confirmed.** B1's spawn frames swing with the classes at the head of the queue: 74% of them are over 1.1 × the 2 ms budget it was tuned for, max 4.6 ms |
+| H4 | A time cap checked between items overruns by up to one item | **Confirmed.** B2 is over 1.1 × budget in 37% of its spawn frames; max 2.75 ms = the budget plus about one grunt or boss |
+| H5 | Destroy and GC hitch like spawning; pooling removes them | **Not supported at this scale.** Destroying 500 actors costs at most 8.9 ms (B0), and the forced GC frame peaks at about 9 ms in **every** configuration, pooled or not. No D or GC frame is over 33.3 ms |
+| H6 | First spawns cost more | **Weak at this scale.** The priming run's B0 wave frame (85.2 ms) is within the measured runs' range (75.6–97.6 ms); PSO events: 2 per run, at start-up |
+| H7 | Re-activating a whole pool in one frame is not free | **Confirmed.** B3's acquire frame does 10.9 ms of work (500 actors: about 22 µs each) and parking 7.4 ms. Still about **7×** cheaper than spawning (9.3 ms per wave against B0's 76.5 ms of spawn work) |
+| new | **Spreading spawns costs more in total** | B1 and B2 do 98 and 95 ms of spawn work per wave against B0's 76.5 ms in one burst: about **25% more**, presumably because a burst runs with warm caches [inferred]. A cost of pacing that SpawnPacer will pay too, and is reported |
+
+**What this changes (stated plainly):**
+- **At this workload, any pacing removes the hitch.** B1, B2 and even the simple pool B3 have **0 frames over 33.3 ms**. So SC1 still has to pass, but it **cannot distinguish** SpawnPacer from the existing patterns here.
+- The measurable difference that remains is **budget adherence (SC3)**. B2, the Mass / SpawnBudget model, exceeds 1.1 × its own budget in 37% of its spawn frames, and B1 in 74%. Then the **tail** (SC2: B2's max 7.57 ms is the bar), the **latency** paid (SC4: B2 takes 42 frames), and the pool (SC5, SC6).
+- **No single actor exceeds the 2 ms budget** (the boss is 0.65 ms), so the per-component split (S6) has nothing to fix at 2 ms. It can only matter at the 1 ms budget of the sweep or with heavier actors, and the ablation will show whether it does, not assume it.
+- The targets of 01 §6.4 stay as they were fixed; nothing is reframed. The README and 01 say this in one line each.
+
+**Audit trail for S3:**
+- `code-review` (medium) on the diff: 9 findings, 5 important + 4 nits, **all fixed** (05 D1–D3):
+  - a reused drone flew back to the park location;
+  - a despawn left unserved spawns that leaked into the next cycle;
+  - a pool miss dropped the request;
+  - the pool fill could land in the capture with a zero warm-up;
+  - parked enemies kept thinking;
+  - per-item setup inside the timed loop;
+  - "Destroyed" overcounted;
+  - `TOptional::GetValue` without a check;
+  - docs not yet updated.
+- While fixing them, one of my own fixes (filling the pool in `OnWorldBeginPlay`) was found wrong before it was built: the world hadn't begun play, so BeginPlay would have run after parking. It was reverted to the first warm-up frame (05 D3).
+- `simplify` (self-review, four angles): no further change.
+- Tools: `csv_stats.py` gained per-window statistics of the frames that did spawn work, with the count over 1.1 × budget (SC3), and `run_bench.py --resummarize` rebuilds a summary from raw data. The S2 calibration and S3 baseline summaries were rebuilt with it; their manifests are unchanged.
+- Shared-scratchpad rule (brief §2 rule 11): drafts now live in the git-ignored `_wip\`. My files in the shared scratchpad were checked by content and moved to `scratchpad\p02_spawnpacer\`. Every tracked and pending file was searched for other projects' identifiers: none.
+
 ---
 
 ## Phases 5–8 (to be written)

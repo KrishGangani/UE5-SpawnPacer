@@ -44,6 +44,12 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "SpawnPacer Demo")
 	bool bThinks = false;
 
+	/** Starts the think timer (enemies only). Called by BeginPlay, and by a pool when it reuses the actor. */
+	void StartThinking();
+
+	/** Stops the think timer. Called by a pool when it parks the actor, and by EndPlay. */
+	void StopThinking();
+
 	float GetHealth() const { return Health; }
 	int32 GetAmmo() const { return Ammo; }
 	ESPBrainState GetState() const { return State; }

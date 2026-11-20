@@ -214,3 +214,58 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 6. **Common mistakes.** Forgetting `DoesSupportWorldType` (the subsystem also runs in editor worlds); expecting `ForceGarbageCollection` to collect immediately.
 7. **Example.** `RETURN_QUICK_DECLARE_CYCLE_STAT(USPBenchmarkSubsystem, STATGROUP_Tickables);`
 8. **In this project.** The director (05 B4).
+
+---
+
+## APIs added in step S3 (baselines B1–B3)
+
+| # | API | First used in |
+|---|---|---|
+| 15 | `SpawnActorDeferred` (`bDeferConstruction`) + `AActor::FinishSpawning` | S3 (B1) |
+| 16 | `SetActorHiddenInGame`, `SetActorEnableCollision`, `SetActorTickEnabled`, `SetActorTransform` + `ETeleportType` | S3 (B3) |
+| 17 | `TOptional` | S3 |
+| 18 | A `UPROPERTY` `TMap` with a struct value | S3 (B3) |
+
+## 15. `SpawnActorDeferred` (`bDeferConstruction`) + `AActor::FinishSpawning`
+
+1. **What it is.** A spawn that stops before the construction script (`Classes/Engine/World.h:3851–3871`, `bDeferConstruction` at 476), finished later by `FinishSpawning` (`Private/Actor.cpp:4374`).
+2. **Why it exists.** So the caller can set properties after construction and before the construction script and BeginPlay see them.
+3. **How it works.** `SpawnActor` with `bDeferConstruction = true` still does construction **and native component registration** (`Actor.cpp:4333–4337`); it skips only `FinishSpawning`. `FinishSpawning` then runs the construction script, initialisation and BeginPlay in one call (`Actor.cpp:4415–4529`). It may be called on a later frame; it must be called exactly once (`ensure(!bHasFinishedSpawning)`, 4381).
+4. **When to use it.** Setting spawn parameters before BeginPlay; splitting a spawn at the engine's deferred seam (01b §0).
+5. **When not to.** Believing it defers the expensive part: registration has already happened (01b #1).
+6. **Common mistakes.** Never calling `FinishSpawning` (the actor never begins play); calling it twice; a different transform at `FinishSpawning` without knowing the engine reconciles it with the spawn transform (`Actor.cpp:4386–4409`).
+7. **Example.** `Parameters.bDeferConstruction = true; AActor* A = World.SpawnActor<AActor>(Class, T, Parameters); /* set things */ A->FinishSpawning(T);`
+8. **In this project.** B1 (05 D1), timed as two halves (`ConstructMs`, `FinishMs`); SpawnPacer's staged spawn from S5.
+
+## 16. `SetActorHiddenInGame`, `SetActorEnableCollision`, `SetActorTickEnabled`, `SetActorTransform` + `ETeleportType`
+
+1. **What it is.** The actor-level switches a pool uses (`Classes/GameFramework/Actor.h:1922, 1926, 2898, 1800`).
+2. **Why it exists.** Turning an actor's visibility, collision and tick on and off without destroying it.
+3. **How it works.** Hidden and collision apply to the actor's components; `SetActorTickEnabled` touches **only** the actor's own tick (`Private/Actor.cpp:1754–1760`); `SetActorTransform(T, bSweep, OutHit, ETeleportType::ResetPhysics)` moves the actor and resets any physics velocity instead of sweeping.
+4. **When to use it.** Parking and reusing pooled actors.
+5. **When not to.** Expecting them to stop everything: component ticks, timers and gameplay state keep going (01b #11–12).
+6. **Common mistakes.** Forgetting component ticks; teleporting without `ResetPhysics`; reusing an actor whose code captured its old position at BeginPlay (the drone, 05 D2).
+7. **Example.** `Actor->SetActorHiddenInGame(true); Actor->SetActorEnableCollision(false); Actor->SetActorTickEnabled(false);`
+8. **In this project.** B3's `Park` and reuse (05 D1); SpawnPacer's pool adds component ticks, timers, latent actions and verification (02 §11).
+
+## 17. `TOptional`
+
+1. **What it is.** A value that may be absent (`Core/Public/Misc/Optional.h`).
+2. **Why it exists.** "No value" without a magic number or a separate flag.
+3. **How it works.** `IsSet()`, `GetValue()` (asserts if empty), `*Opt`, and `if (const TOptional<T> X = F())` tests and binds in one line; `return {};` returns an empty one.
+4. **When to use it.** Parsing that can fail; optional results.
+5. **When not to.** Where an empty value is a programming error that should assert at once.
+6. **Common mistakes.** `GetValue()` on an empty optional (an assertion).
+7. **Example.** `if (const TOptional<ESPBaseline> Mode = ParseBaseline(Config)) { Configure(*Mode, ...); }`
+8. **In this project.** `ParseBaseline` (05 D3).
+
+## 18. A `UPROPERTY` `TMap` with a struct value
+
+1. **What it is.** A reflected map, here `TMap<TObjectPtr<UClass>, FSPPooledActors>`.
+2. **Why it exists.** GC must see the actors in the map; only reflected containers are visible to it.
+3. **How it works.** Keys and values must be reflectable types; a value can't be a `TArray` directly, so the array is wrapped in a `USTRUCT` with a `UPROPERTY` array. `FindOrAdd(Key)` returns a reference to a new or existing value; `Find(Key)` returns a pointer or null.
+4. **When to use it.** Per-key collections of objects that must stay alive.
+5. **When not to.** Hot per-frame lookups over many keys (a `TMap` lookup hashes the key).
+6. **Common mistakes.** A raw, non-`UPROPERTY` map of object pointers (GC can't see them); `TArray` as the value type (UHT refuses it).
+7. **Example.** `Pool.FindOrAdd(Class).Actors.Add(Actor);`
+8. **In this project.** B3's pool (05 D1); SpawnPacer's per-class pools from S7.

@@ -99,9 +99,9 @@ Without a solution, teams typically:
 | ID | Configuration | Why it is included |
 |---|---|---|
 | B0 | **Plain `SpawnActor`** for all 500 in the request frame; `Destroy` all at despawn | What most code does |
-| B1 | **Deferred-spawn pattern, count cap:** a queue, `SpawnActorDeferred` + `FinishSpawning`, at most K actors per frame (spawn and destroy). K = budget ÷ mean per-actor cost from calibration, fixed per batch and recorded | The pattern Epic staff and the forums recommend; PoolManager's model |
+| B1 | **Deferred-spawn pattern, count cap:** a queue, `SpawnActorDeferred` + `FinishSpawning`, at most K actors per frame (spawn and destroy). K = budget ÷ mean per-actor cost from calibration, fixed per batch and recorded (K = 14, 09 S3) | The pattern Epic staff and the forums recommend; PoolManager's model |
 | B2 | **Time cap checked between items:** spawn (and destroy) while elapsed < budget, at the **same budget** as SpawnPacer | Mass's and SpawnBudget's model: the strongest existing pacer |
-| B3 | **Simple pool:** filled during warm-up, all 500 acquired in the request frame, released at despawn. Reset = hide, collision, actor tick (PoolManager's set) | The naive pool |
+| B3 | **Simple pool:** filled during warm-up, all 500 acquired in the request frame, released at despawn. Reset = hide, collision, actor tick (PoolManager's set), plus the two callbacks a pool user writes (stop and restart the enemies' think timer; move the drone's circle to its new place). Gameplay state is **not** reset: that unchecked reset is what SPP targets | The naive pool |
 | **SPS** | **SpawnPacer, spawn path:** predicted-cost admission per stage; Grunt split at the deferred seam, Boss per component; budgeted destroy | Our system without a pool |
 | **SPP** | **SpawnPacer, pool path:** budgeted pre-warm, budgeted acquire/release, full reset contract | Our system with its pool |
 
@@ -131,6 +131,8 @@ Because the step is fixed, every window covers the same frames in every configur
 | Pool memory | MB, KB per actor | `-LLM` runs: LLM total and tags; `PhysicalUsedMB` |
 
 ### 6.4 Pass/fail criteria [target]
+
+*After the S3 baseline batch (09 S3), stated plainly and without changing any target:* at this workload every paced baseline already has 0 frames over 33.3 ms, so SC1 must still pass but can't separate SpawnPacer from existing patterns. The comparison rests on SC2–SC4 (B2 exceeds 1.1 × its budget in 37% of its spawn frames) and on the pool criteria SC5–SC6.
 
 | # | Criterion | Threshold |
 |---|---|---|

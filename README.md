@@ -8,7 +8,7 @@
 
 | Phase | 1 Problem | 2 Research | 3 Architecture | 4 Foundation | 5 Implementation | 6 Explanation | 7 Testing | 8 Profiling | 9 Review | 10 Portfolio |
 |---|---|---|---|---|---|---|---|---|---|---|
-| State | ✓ | ✓ | ✓ final | ✓ | in progress (S2 of 9 done) | ongoing | — | — | — | — |
+| State | ✓ | ✓ | ✓ final | ✓ | in progress (S3 of 9 done: baselines captured) | ongoing | — | — | — | — |
 
 ---
 
@@ -24,6 +24,8 @@ Phase 2 read the engine and the community tools at source level ([Explanation/01
 - Every pool leaves the reset of a reused actor to an interface that **nobody checks**.
 - The engine can already *measure* spawn cost per class (`spawnactortimer`, a CSV stat, Insights scopes), but nothing uses that measurement to *decide*.
 - A plugin can split one actor's spawn **only at two engine seams**: the deferred-spawn seam, and per native component (held back with the public `bAutoRegister` flag and registered before `FinishSpawning`). Construction, one component's registration and `FinishSpawning` are indivisible without engine changes. Spawning can't leave the game thread, and asynchronous physics-state creation applies only to level streaming.
+
+**What the baseline measurements showed (S3, 09):** at this workload, *any* pacing already removes the >33.3 ms hitches: the count cap, the time cap and even a simple pool have none. The time cap (the Mass / SpawnBudget model) still exceeds 1.1 × its own 2 ms budget in 37% of its spawn frames, and the count cap in 74%. That budget adherence, not hitch removal, is where SpawnPacer has to show a difference.
 
 **The gap it targets (medium):** a job is started only if its **predicted** per-class, per-stage cost fits the frame's budget; spawns are split at the engine's seams where that helps; and a pooled actor's reset is **verified** against its own fresh state, with seeded defects proving the check works. None of the reviewed solutions does these, and none publishes controlled measurements. This is a statement about what was reviewed, not a claim that nobody has done it.
 

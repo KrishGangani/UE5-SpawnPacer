@@ -61,12 +61,27 @@ void ASPWaveActor::BeginPlay()
 	Super::BeginPlay();
 	WaveBeginPlay();
 
-	// Last, so "ready" means this actor's BeginPlay has completely finished. Every configuration completes a wave
-	// through this one call (02 section 9). Null in worlds without the director (editor, other maps).
+	// Last, so "ready" means this actor's BeginPlay has completely finished.
+	NotifyReady();
+}
+
+void ASPWaveActor::NotifyReady() const
+{
+	// Every configuration completes a wave through this one call (02 section 9). Null in worlds without the director.
 	if (USPBenchmarkSubsystem* Bench = GetWorld()->GetSubsystem<USPBenchmarkSubsystem>())
 	{
 		Bench->NotifyActorReady();
 	}
+}
+
+void ASPWaveActor::PrepareForReuse()
+{
+	Brain->StartThinking();
+}
+
+void ASPWaveActor::PrepareForParking()
+{
+	Brain->StopThinking();
 }
 
 void ASPWaveActor::BuildBody(int32 PartCount, UStaticMesh* RootMesh, UStaticMesh* PartMesh, FName RootProfile, bool bPartsCollide)
@@ -105,6 +120,12 @@ ASPDrone::ASPDrone()
 void ASPDrone::WaveBeginPlay()
 {
 	Origin = GetActorLocation();
+}
+
+void ASPDrone::PrepareForReuse()
+{
+	Super::PrepareForReuse();
+	Origin = GetActorLocation(); // the pool has moved it; without this it would fly back to where it was first spawned
 }
 
 void ASPDrone::Tick(float DeltaSeconds)

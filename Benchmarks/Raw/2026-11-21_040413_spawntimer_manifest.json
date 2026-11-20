@@ -1,0 +1,419 @@
+{
+  "environment": {
+    "date": "2026-11-21T04:04:13",
+    "engine": "5.8.4 (CL 58902052)",
+    "build_config": "Development (packaged)",
+    "compiler": "MSVC 14.44.35229, Windows SDK 10.0.22621.0",
+    "cpu": "Intel(R) Core(TM) i7-14650HX",
+    "gpus": "Intel(R) UHD Graphics (driver 32.0.101.7088); NVIDIA GeForce RTX 5070 Laptop GPU (driver 32.0.16.1047)",
+    "ram_gb": "31.6",
+    "os": "Microsoft Windows 11 Home Single Language build 26200",
+    "power_plan": "Power Scheme GUID: 6fecc5ae-f350-48a5-b669-b472cb895ccf  (Turbo)",
+    "on_ac_power": true,
+    "resolution": "1280x720 windowed, default scalability",
+    "common_args": "-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd",
+    "cpu_affinity": "0xFFFF (performance cores only; hybrid CPU)"
+  },
+  "arguments": {
+    "configs": "B0",
+    "wave_size": 500,
+    "work": "20000",
+    "runs": 1,
+    "waves": 3,
+    "warmup": 5.0,
+    "cycle": 12.0,
+    "life": 6.0,
+    "gc_after": 2.0,
+    "seed": 1,
+    "extra": "-SPSpawnTimer",
+    "cooldown": 5.0,
+    "label": "spawntimer",
+    "no_prime": true,
+    "dry_run": false
+  },
+  "analysis_windows": {
+    "fps": 60.0,
+    "wave_window": 4.0,
+    "despawn_window": 2.0,
+    "gc_frames": 3,
+    "pre_window": 1.0
+  },
+  "runs": [
+    {
+      "name": "2026-11-21_040413_spawntimer_B0_W20000_r1",
+      "config": "B0",
+      "work": 20000,
+      "run": 1,
+      "priming": false,
+      "exit_code": 0,
+      "wall_seconds": 12.4,
+      "command": "\"D:\\UNREAL PORTFOLIO\\P02_SpawnPacer\\Build\\Windows\\SpawnPacer\\Binaries\\Win64\\SpawnPacer.exe\" -windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_040413_spawntimer_B0_W20000_r1 -SPWork=20000 -SPConfig=B0 -SPSpawnTimer",
+      "capture": "2026-11-21_040413_spawntimer_B0_W20000_r1.csv",
+      "finalised": true,
+      "events": {
+        "SPBench/WaveRequested": 3,
+        "SPBench/WaveComplete": 3,
+        "PSO": 2,
+        "SPBench/DespawnRequested": 3,
+        "SPBench/DespawnComplete": 3,
+        "SPBench/GCForced": 3,
+        "GC": 3,
+        "SPBench/BenchEnd": 1,
+        "Cmd: spawnactortimer stop": 1
+      },
+      "waves": 3,
+      "wave_latency_frames": [
+        0,
+        0,
+        0
+      ],
+      "windows": {
+        "W": {
+          "frames": 720,
+          "frame_time_frames": 720,
+          "columns": {
+            "FrameTime": {
+              "n": 720,
+              "mean": 4.432733194444444,
+              "min": 2.9448,
+              "median": 4.0432,
+              "p95": 5.2022699999999995,
+              "p99": 6.158589999999994,
+              "max": 85.4226
+            },
+            "GameThreadTime": {
+              "n": 720,
+              "mean": 4.0361995833333335,
+              "min": 2.8654,
+              "median": 3.46895,
+              "p95": 4.806375,
+              "p99": 6.178142,
+              "max": 83.837
+            },
+            "RenderThreadTime": {
+              "n": 720,
+              "mean": 4.065809166666667,
+              "min": 2.7725,
+              "median": 3.94055,
+              "p95": 5.1356649999999995,
+              "p99": 5.743679999999999,
+              "max": 20.8894
+            },
+            "GPUTime": {
+              "n": 720,
+              "mean": 2.6234502777777777,
+              "min": 2.213,
+              "median": 2.5833,
+              "p95": 3.07942,
+              "p99": 3.292916,
+              "max": 3.3441
+            },
+            "SPBaseline/WorkMs": {
+              "n": 720,
+              "mean": 0.30755958333333333,
+              "min": 0.0,
+              "median": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0002,
+              "max": 80.7054
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 720,
+              "mean": 0.3069927777777778,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 80.5694
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 508,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 3,
+          "over_16_7ms": 3
+        },
+        "D": {
+          "frames": 360,
+          "frame_time_frames": 360,
+          "columns": {
+            "FrameTime": {
+              "n": 360,
+              "mean": 3.181313333333333,
+              "min": 1.7395,
+              "median": 3.0574000000000003,
+              "p95": 3.748735,
+              "p99": 9.344858000000002,
+              "max": 11.3453
+            },
+            "GameThreadTime": {
+              "n": 360,
+              "mean": 1.456338611111111,
+              "min": 0.9153,
+              "median": 1.22905,
+              "p95": 1.863445,
+              "p99": 9.426933000000005,
+              "max": 11.1871
+            },
+            "RenderThreadTime": {
+              "n": 360,
+              "mean": 3.1153902777777778,
+              "min": 2.1747,
+              "median": 3.0223500000000003,
+              "p95": 3.6028700000000002,
+              "p99": 4.497497000000001,
+              "max": 8.3222
+            },
+            "GPUTime": {
+              "n": 360,
+              "mean": 2.522216111111111,
+              "min": 2.083,
+              "median": 2.45845,
+              "p95": 3.08786,
+              "p99": 3.593840000000001,
+              "max": 3.6354
+            },
+            "SPBaseline/WorkMs": {
+              "n": 360,
+              "mean": 0.06118694444444445,
+              "min": 0.0,
+              "median": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0002,
+              "max": 7.682
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 360,
+              "mean": 0.06027416666666666,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 7.5901
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "GC": {
+          "frames": 9,
+          "frame_time_frames": 9,
+          "columns": {
+            "FrameTime": {
+              "n": 9,
+              "mean": 5.790755555555555,
+              "min": 2.4691,
+              "median": 5.84,
+              "p95": 7.8096,
+              "p99": 7.84064,
+              "max": 7.8484
+            },
+            "GameThreadTime": {
+              "n": 9,
+              "mean": 3.5332333333333334,
+              "min": 1.2652,
+              "median": 1.8467,
+              "p95": 7.38898,
+              "p99": 7.421556000000001,
+              "max": 7.4297
+            },
+            "RenderThreadTime": {
+              "n": 9,
+              "mean": 4.7126777777777775,
+              "min": 2.4667,
+              "median": 5.1799,
+              "p95": 6.774699999999999,
+              "p99": 7.33406,
+              "max": 7.4739
+            },
+            "GPUTime": {
+              "n": 9,
+              "mean": 2.2841111111111108,
+              "min": 2.2107,
+              "median": 2.3096,
+              "p95": 2.3507,
+              "p99": 2.3507,
+              "max": 2.3507
+            },
+            "SPBaseline/WorkMs": {
+              "n": 9,
+              "mean": 0.0001333333333333333,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0005799999999999997,
+              "p99": 0.0008359999999999999,
+              "max": 0.0009
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "PRE": {
+          "frames": 120,
+          "frame_time_frames": 121,
+          "columns": {
+            "FrameTime": {
+              "n": 121,
+              "mean": 3.0866289256198347,
+              "min": 2.3426,
+              "median": 3.0386,
+              "p95": 3.6113,
+              "p99": 3.8785999999999996,
+              "max": 7.1323
+            },
+            "GameThreadTime": {
+              "n": 120,
+              "mean": 1.2822866666666668,
+              "min": 0.9246,
+              "median": 1.23095,
+              "p95": 1.7170199999999998,
+              "p99": 1.8671389999999999,
+              "max": 1.9403
+            },
+            "RenderThreadTime": {
+              "n": 120,
+              "mean": 3.0478691666666666,
+              "min": 2.6384,
+              "median": 3.0065999999999997,
+              "p95": 3.5347600000000003,
+              "p99": 3.688338,
+              "max": 3.6981
+            },
+            "GPUTime": {
+              "n": 120,
+              "mean": 2.4923808333333333,
+              "min": 2.2043,
+              "median": 2.4297500000000003,
+              "p95": 2.9066899999999998,
+              "p99": 3.09999,
+              "max": 3.1224
+            },
+            "SPBaseline/WorkMs": {
+              "n": 120,
+              "mean": 5.583333333333333e-05,
+              "min": 0.0,
+              "median": 0.0001,
+              "p95": 0.0001,
+              "p99": 0.0001,
+              "max": 0.0001
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        }
+      },
+      "metadata": {
+        "hasheaderrowatend": "1",
+        "eventtimestamps": "1",
+        "platform": "Windows",
+        "config": "Development",
+        "buildversion": "++UE5+Release-5.8-CL-58902052",
+        "engineversion": "5.8.4-58902052+++UE5+Release-5.8",
+        "enginereleaseversion": "5.8.4",
+        "os": "Windows 11 (25H2) [10.0.26200.9974]",
+        "cpu": "GenuineIntel|Intel(R) Core(TM) i7-14650HX",
+        "pgoenabled": "0",
+        "pgoprofilingenabled": "0",
+        "ltoenabled": "0",
+        "asan": "0",
+        "mergedmodules": "0",
+        "compacttset": "0",
+        "loginid": "cb4377c742481910ba0f5999e88874c8",
+        "llm": "0",
+        "zenstreaming": "0",
+        "systemresolution.resx": "1280",
+        "systemresolution.resy": "720",
+        "extradevelopmentmemorymb": "0",
+        "verbatimrhiname": "D3D12",
+        "rhiname": "D3D12",
+        "rhifeaturelevel": "SM6",
+        "shaderplatform": "PCD3D_SM6",
+        "gpu": "NVIDIA GeForce RTX 5070 Laptop GPU",
+        "gpudriver": "610.47",
+        "deviceprofile": "Windows",
+        "largeworldcoordinates": "1",
+        "raytracing": "0",
+        "spruntag": "2026-11-21_040413_spawntimer_B0_W20000_r1",
+        "spconfig": "B0",
+        "spcountcap": "25",
+        "spbudgetms": "2.0",
+        "spwavesize": "500",
+        "spwaves": "3",
+        "spseed": "1",
+        "spwork": "20000",
+        "spwavehash": "0x29FD2F1C",
+        "spcycle": "12.0",
+        "splife": "6.0",
+        "spgcafter": "2.0",
+        "streamingpoolsizemb": "1000",
+        "csvid": "C1DDEB9342EFC1C3E5E8CF9E38B114B6",
+        "targetframerate": "165",
+        "starttimestamp": "1795214058",
+        "namedevents": "0",
+        "hasgtstalls": "0",
+        "vsyncenabled": "0",
+        "csvbench_timingstat_ns": "52.050000",
+        "csvbench_customstat_ns": "30.192500",
+        "csvbench_duration_ms": "3.289800",
+        "endtimestamp": "1795214066",
+        "captureduration": "8.052341",
+        "csvmaxfilebytesreached": "0",
+        "commandline": "-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_040413_spawntimer_B0_W20000_r1 -SPWork=20000 -SPConfig=B0 -SPSpawnTimer"
+      },
+      "run_report": "2026-11-21_040413_spawntimer_B0_W20000_r1_report.csv",
+      "log_errors": 0,
+      "log_warnings": 0
+    }
+  ]
+}

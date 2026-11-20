@@ -58,7 +58,12 @@ COMMON_ARGS = ("-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautost
 # Extra command-line arguments per configuration (02_System_Architecture.md section 9). Each configuration is added in
 # the step that implements it: B1-B3 in S3, SPS in S5, SPP in S7.
 CONFIGS = {
-    "B0": "-SPConfig=B0",   # plain SpawnActor for the whole wave in one frame, Destroy for the whole wave in one frame
+    "B0": "-SPConfig=B0",                    # plain SpawnActor for the whole wave in one frame; Destroy likewise
+    # B1, the deferred pattern with a count cap: K = budget / mean per-actor cost. The S2 calibration extrapolates the
+    # 500-actor wave at work 20000 to about 70 ms, 0.14 ms per actor, so K = floor(2.0 / 0.14) = 14 (09 S3).
+    "B1": "-SPConfig=B1 -SPCountCap=14",
+    "B2": "-SPConfig=B2 -SPBudgetMs=2.0",     # time cap checked between items, at SpawnPacer's budget (02 section 7)
+    "B3": "-SPConfig=B3",                    # simple pool, filled during the warm-up
 }
 
 SUMMARY_WINDOWS = ("W", "D", "GC", "PRE")
@@ -222,24 +227,28 @@ def write_summary(batch: str, environment: dict, records: list[dict], expected_w
              "## Results per analysis window (01_Problem_Analysis.md 6.3)", "",
              "FrameTime cells: median across runs of each run's statistic, then [min-max across runs], in ms. "
              "Hitch columns: frames over 33.3 ms, summed over runs, and the largest count in one run.", ""]
-    header = "| Config | Work | Runs | Window | Frames/run | FrameTime median | p99 | max | >33.3 ms (sum / worst run) | Spawn work max (ms) |"
+    header = ("| Config | Work | Runs | Window | Frames/run | FrameTime median | p99 | max | >33.3 ms (sum / worst run) | "
+              "Spawn frames/run | Spawn work p99 (ms) | Spawn work max (ms) | Spawn frames > 1.1 x budget (sum / worst run) |")
     lines += [header, "|" + "---|" * (header.count("|") - 1)]
     for (config, work), group in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
         for window in SUMMARY_WINDOWS:
             stats = [g["windows"][window] for g in group]
             frame = [s["columns"].get("FrameTime") for s in stats]
             frame = [f for f in frame if f]
-            work_column = next((c for c in ("SpawnPacer/WorkMs", "SPBaseline/WorkMs") if c in stats[0]["columns"]), None)
-            work_max = [s["columns"][work_column]["max"] for s in stats if work_column and work_column in s["columns"]]
+            active = [next(iter(s.get("active_work", {}).values()), None) for s in stats]
+            active = [a for a in active if a]
             hitches = [s.get("over_33_3ms", 0) for s in stats]
+            over = [a["over_budget"] for a in active]
+            spawn_cells = (f"{statistics.median([a['n'] for a in active]):.0f} | {across_runs([a['p99'] for a in active])} | "
+                           f"{across_runs([a['max'] for a in active])} | {sum(over)} / {max(over)}") if active else "0 | n/a | n/a | n/a"
             lines.append(f"| {config} | {work if work is not None else 'default'} | {len(group)} | {window} | "
                          f"{statistics.median([s['frames'] for s in stats]):.0f} | "
                          f"{across_runs([f['median'] for f in frame])} | {across_runs([f['p99'] for f in frame])} | "
-                         f"{across_runs([f['max'] for f in frame])} | {sum(hitches)} / {max(hitches)} | {across_runs(work_max)} |")
+                         f"{across_runs([f['max'] for f in frame])} | {sum(hitches)} / {max(hitches)} | {spawn_cells} |")
         # Per run: the median latency of its waves; then median and [min-max] across runs, like every other cell.
         per_run = [statistics.median(g["wave_latency_frames"]) for g in group if g.get("wave_latency_frames")]
         lines.append(f"| {config} | {work if work is not None else 'default'} | {len(group)} | latency | | "
-                     f"wave latency, frames (per-run median): {across_runs([float(v) for v in per_run])} | | | | |")
+                     f"wave latency, frames (per-run median): {across_runs([float(v) for v in per_run])} | | | | | | | |")
     lines += ["", "Excluded runs (non-zero exit, timeout, bad capture or log, wrong wave count, or a wave that never "
               f"completed; their files stay in Raw): {', '.join(excluded) if excluded else 'none'}.",
               "", f"Raw files: `Benchmarks/Raw/{batch}_*` (CSV, run report and log per run) and `{batch}_manifest.json`."]
@@ -247,6 +256,28 @@ def write_summary(batch: str, environment: dict, records: list[dict], expected_w
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
+
+
+def resummarize(batch: str) -> int:
+    """Rebuilds a batch's summary from its manifest and raw CSVs with the current analysis code."""
+    with open(os.path.join(RAW_DIR, batch + "_manifest.json"), encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    saved = manifest["arguments"]
+    windows = manifest.get("analysis_windows") or analysis_windows(argparse.Namespace(**saved))
+    records = []
+    for record in manifest["runs"]:
+        if "capture" in record:
+            analysis = csv_stats.analyse(os.path.join(RAW_DIR, record["capture"]), csv_stats.DEFAULT_COLUMNS, **windows)
+            record = dict(record, **{k: analysis[k] for k in ("finalised", "waves", "wave_latency_frames", "windows")})
+        records.append(record)
+    path = write_summary(batch, manifest["environment"], records, saved["waves"])
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text.replace("## Results per analysis window", "Rebuilt with `run_bench.py --resummarize` from the raw "
+                                  "CSVs and the unchanged manifest.\n\n## Results per analysis window", 1))
+    print("summary:", path)
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -268,7 +299,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--label", default="")
     parser.add_argument("--no-prime", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resummarize", metavar="BATCH",
+                        help="rebuild BATCH's summary from its manifest and raw CSVs with the current analysis (no runs; "
+                             "the manifest is not changed)")
     args = parser.parse_args(argv)
+    if args.resummarize:
+        return resummarize(args.resummarize)
 
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
     unknown = [c for c in configs if c not in CONFIGS]

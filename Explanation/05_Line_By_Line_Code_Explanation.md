@@ -7,7 +7,8 @@
 | A | Phase 4, F1–F4 (foundation) | `.uproject`, two `Target.cs`, two `Build.cs`, two module `.cpp`, `.uplugin`, three config `.ini`, `Tools\*.bat`, `Tools\perf_cores.py` |
 | B | S1 (workload, B0 only) | `SPWaveActor`, `SPWaveBrainComponent`, `SPBaselineSpawner`, `SPBenchmarkSubsystem`, `DefaultGame.ini` |
 | C | S2 (measurement tools) | `Tools\csv_stats.py`, `Tools\run_bench.py` |
-| D… | S3 onwards | added with each step |
+| D | S3 (baselines B1–B3) | `SPBaselineSpawner` (rewritten), S3 additions to `SPWaveActor`, `SPWaveBrainComponent`, `SPBenchmarkSubsystem` |
+| E… | S4 onwards | added with each step |
 
 ---
 
@@ -252,7 +253,7 @@ protected:
 | Mesh paths `"/Engine/BasicShapes/Sphere.Sphere"` … | Engine content, so nothing has to be authored. Referenced only from C++, so `DefaultGame.ini` lists the folder for cooking (B5) |
 | `PrimaryActorTick.bCanEverTick = false;` (base constructor) | Most wave actors never tick. A tick function that exists costs registration and dispatch even when empty (UE5-UpdateBudget measured this), so it is off unless the class needs it |
 | `SPWave::MaxParts` and `PartNames()` | The subobject names `Part00` … `Part22`, built **once** on first use (a `static` local initialised by a lambda, 04 §12–13). **Changed by the S1 simplify pass:** the names used to be formatted with `FString::Printf` inside every spawned actor's constructor: 23 strings per boss, a cost a real class (which uses literal names) doesn't have, inside the very thing being measured |
-| `ASPWaveActor::BeginPlay()` → `GetWorld()->GetSubsystem<USPBenchmarkSubsystem>()` → `NotifyActorReady()` | The "ready" call. `GetSubsystem` returns null in worlds without the director (editor, other maps), so it is guarded. Every configuration completes a wave through this one call (02 §9) |
+| `ASPWaveActor::BeginPlay()` → `NotifyReady()` → `GetWorld()->GetSubsystem<USPBenchmarkSubsystem>()` → `NotifyActorReady()` | The "ready" call (`NotifyReady()` since S3, so a pool can call it too, 05 D2). `GetSubsystem` returns null in worlds without the director (editor, other maps), so it is guarded. Every configuration completes a wave through this one call (02 §9) |
 | `Brain = CreateDefaultSubobject<USPWaveBrainComponent>(TEXT("Brain"));` | Creates the component as a **default subobject**: part of the class default object, and copied into every spawned instance (06 §7). The name must be unique within the actor |
 | `CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Root"))` … `SetRootComponent(Root)` | The root mesh: every other part attaches to it, and the engine registers it first (01b §2.2) |
 | `SetCollisionProfileName(RootProfile)` | Collision profiles are named presets (06 §8). Drone: `DefaultProjectile`; crate: `BlockAllDynamic`; grunt and boss: `Pawn` (`Classes/Engine/CollisionProfile.h:189–196`). So each class creates a different amount of physics state at registration (H1) |
@@ -288,22 +289,9 @@ protected:
 | `EndPlay` → `ClearTimer(ThinkTimer)` → `Super::EndPlay` | The engine doesn't clear timers on EndPlay (01b #11). A destroyed brain's timer would just stop firing; a pooled one (S7) would keep firing, so the brain clears its own. `Super` last, so the base class still sees a valid component |
 | `Think()` | `++ThinkCount`; `Ammo = FMath::Max(0, Ammo - 1)`; the state cycles through the three values with `static_cast` (04 §9) |
 
-### B3. `Public\SPBaselineSpawner.h` / `.cpp`: baseline B0
+### B3. `Public\SPBaselineSpawner.h` / `.cpp`: baseline B0 (S1 version)
 
-| Line | What it does, and why |
-|---|---|
-| `USTRUCT() struct FSPWaveEntry { UPROPERTY() TSubclassOf<ASPWaveActor> Class; UPROPERTY() FTransform Transform; };` | One actor of a wave. `USTRUCT` + `UPROPERTY` so arrays of it can be `UPROPERTY` too (GC sees the class pointers, though native classes are never collected). `TSubclassOf<ASPWaveActor>` is a `UClass*` that only accepts subclasses of `ASPWaveActor` (06 §11) |
-| `UCLASS() class USPBaselineSpawner : public UObject` | A plain `UObject`, owned by the director. **Design change in S1** (02 §4.2, §15): planned as a tickable subsystem, but two tickable subsystems have no guaranteed tick order (new tickables wait in a `TMap`, `Public/Tickable.h:62`, `Private/Tickable.cpp:66–92`). Driven by the director, a request and its work always share a frame |
-| `RequestWave(TConstArrayView<FSPWaveEntry> Entries)` | `TConstArrayView` is a read-only view of someone else's array (pointer + count, no copy, 06 §11). The entries are appended to `Pending` and spawned on the next `RunFrame` |
-| `class AActor; class ASPWaveActor; class UWorld;` | Forward declarations: the header only names these types (a pointer, a reference, a template argument), so it doesn't include their headers (04 §1). **Added by the S1 code review:** `AActor` used to arrive only through an indirect engine include |
-| `RunFrame(UWorld& World)` | Called once per frame by the director. A reference, not a pointer: the director always has a world, so there is nothing to null-check (04 §10) |
-| `const uint64 Start = FPlatformTime::Cycles64();` … `ToMilliseconds64(Cycles64() - Start)` | The same high-resolution clock SpawnPacer will use (06 §12), around exactly the engine calls. Equal measurement cost in every configuration (02 §9) |
-| `CSV_CUSTOM_STAT(SPBaseline, WorkMs, WorkMs, ECsvCustomStatOp::Set);` (and `Spawned`, `Destroyed`, `Live`) | One value per frame per stat, never per actor (a stat costs about 50 ns, measured by UE5-UpdateBudget). `Set` = this frame's value (06 §10) |
-| `Parameters.SpawnCollisionHandlingOverride = AlwaysSpawn` | The seed fixes every position; a collision test must never move or reject an actor, or the configurations would spawn different waves |
-| `World.SpawnActor<ASPWaveActor>(Entry.Class, Entry.Transform, Parameters)` | **B0:** construction, registration, construction script and BeginPlay, all inside this call (01b #1–2). The template returns the right type, or null on failure |
-| `LiveBefore`, `Live.Reserve(...)`, `return Live.Num() - LiveBefore;` | One allocation for the whole wave; the number spawned is how much `Live` grew (simplify pass: no separate counter) |
-| `if (IsValid(Actor) && Actor->Destroy())` | `IsValid`: something else may have destroyed it already (level teardown, gameplay). `Destroy()` is the actor-side call of `UWorld::DestroyActor` (06 §8); it returns whether the actor is now being destroyed |
-| `UPROPERTY(Transient) TArray<TObjectPtr<AActor>> Live;` | GC-visible references to the live wave. `Transient`: never saved |
+Rewritten in S3 to hold all four baselines; the current file is explained line by line in **D1**.
 
 ### B4. `Public\SPBenchmarkSubsystem.h` / `.cpp`: the director
 
@@ -369,6 +357,7 @@ protected:
 | `event_frames(events, name)` | Indices of the frames that carry `SPBench/<name>` |
 | `window_rows(data, starts, length, before, offset)` | Pools the frames of every window of one type over all waves; `offset` shifts every window (by `FRAME_TIME_LAG` for `FrameTime`); clips at the capture's ends, and the caller reports how many frames each window actually held |
 | `summarize_window(header, data, starts, length, columns, before)` | Per window type: statistics of each column (`FrameTime` from the shifted rows, the rest from the event-aligned rows), plus `over_33_3ms` and `over_16_7ms` on `FrameTime`. `frames` counts the event-aligned rows and `frame_time_frames` the shifted ones, which can be one shorter at the end of a capture (code review: the shortfall used to be hidden) |
+| `WORK_COLUMNS`, `ACTIVE_WORK_MS = 0.01`, `BUDGET_TOLERANCE = 1.10` and the `active_work` part of `summarize_window` (S3) | For each spawner's `WorkMs`, the frames of a window that did real work (above 0.01 ms: reading the clock alone costs microseconds), their statistics, and how many exceed 1.1 × the run's budget (its `spbudgetms` metadata, 2.0 ms when absent). This is SC3's statistic; a p99 over all 240 frames would hide it |
 | `wave_latencies` | For each `WaveRequested`, the first `WaveComplete` at or after it and before the next request; `None` if the wave never completed (that is a failure the summary shows) |
 | `analyse(...)` | One capture → events, wave count, latencies and the W / D / GC / PRE windows. Window lengths come from `--fps` and seconds, so a different fixed step only needs a flag |
 | `selftest()` | Hand-worked cases: percentiles, summary, event parsing, a ten-frame capture with a wave on frame 2 (completes on 4) whose 40 ms frame time sits in row 3, a 3-frame window (40, 20, 10 ms → one frame over 33.3, two over 16.7, median 20, max 40), a pre-window with and without the lag, and a clipped window |
@@ -390,6 +379,54 @@ Copied from UE5-UpdateBudget's `run_bench.py` and adapted. What changed, and why
 | `launch()` | Builds one command line with the `-SP…` settings and `--extra`; deletes `GameUserSettings.ini` (it can re-enable VSync or a frame cap); `subprocess.Popen`; `wait(timeout=…)`; **`finally`: `taskkill /F /T`** if the game is still running, then waits up to 30 s for it to end, so Windows releases its files before they are moved (code review) and a hung run never overlaps the next |
 | `collect()` / `collect_files()` | A file that still can't be moved is recorded as `collect_error` instead of stopping the whole batch (code review). Moves the newest CSV, the run report (`Saved\SPRuns\<name>.csv` → `<name>_report.csv`) and a copy of the log into `Benchmarks\Raw`, refusing to overwrite; counts `Error:` and `Warning:` in the log; runs `csv_stats.analyse` |
 | `is_failure()` | A run fails on a non-zero exit, a timeout, a missing or unfinalised capture, a missing log, log errors, a collect error, **a wave count different from `--waves`**, or **a wave that never completed** (code review). Failed runs are **excluded from the summary** and listed under it; their files stay in `Raw` |
-| `write_summary()` | Per configuration × work × window: frames per run, FrameTime median / p99 / max as median across runs [min–max], frames over 33.3 ms (sum and worst run), spawn-work **max** (a p99 over 240 frames hides the one frame that does a whole B0 wave); then the wave latency as the median across runs of each run's median (code review: it used to pool every wave of every run, unlike every other cell) |
+| `write_summary()` | Per configuration × work × window: frames per run, FrameTime median / p99 / max as median across runs [min–max], frames over 33.3 ms (sum and worst run), then the spawn frames (count per run, p99, max, count over 1.1 × budget; S3), with spawn-work **max** (a p99 over 240 frames hides the one frame that does a whole B0 wave); then the wave latency as the median across runs of each run's median (code review: it used to pool every wave of every run, unlike every other cell) |
 | `--work` default `20000` | The calibrated BeginPlay work (09 S2-c), passed as `-SPWork=` to every run, so all configurations use the same value whatever the cvar's code default is |
+| `--resummarize BATCH` → `resummarize()` (S3) | Rebuilds a batch's summary from its manifest and raw CSVs with the current analysis code, without running anything; the manifest (raw data) is never changed. Used after the S3 tool change to rebuild the S2 and S3 summaries |
 | `main()` | `SetThreadExecutionState` keeps the display awake while the batch runs (changes no power settings); **`pin_self(performance_core_mask())` once, before the environment is recorded or anything is started**, refusing to measure if it fails; default `--runs` = the number of configurations and **at least 2** (a median and a range need two runs; code review); one priming run (`_r0_prime`, excluded from summaries); then each round rotates the configuration order |
+
+---
+
+## Part D · Step S3: the baselines B1–B3
+
+### D1. `Public\SPBaselineSpawner.h` / `.cpp`: B0–B3 (rewritten in S3)
+
+| Line | What it does, and why |
+|---|---|
+| `USTRUCT() struct FSPWaveEntry { UPROPERTY() TSubclassOf<ASPWaveActor> Class; UPROPERTY() FTransform Transform; };` | One actor of a wave. `USTRUCT` + `UPROPERTY` so arrays of it can be `UPROPERTY` too. `TSubclassOf<ASPWaveActor>` is a `UClass*` that only accepts subclasses of `ASPWaveActor` (06 §11) |
+| `USTRUCT() struct FSPPooledActors { UPROPERTY() TArray<TObjectPtr<ASPWaveActor>> Actors; };` | B3's parked actors of one class. A struct because a reflected `TMap` can't hold an array as its value directly (06 §18) |
+| `UENUM() enum class ESPBaseline : uint8 { B0, B1, B2, B3 };` | The four baselines of 01 §6.2, one comment each |
+| `class AActor; class ASPWaveActor; class UWorld;` | Forward declarations: the header only names these types (04 §1) |
+| `UCLASS() class USPBaselineSpawner : public UObject` | A plain `UObject` the director owns and drives each frame (02 §4.2): two tickable subsystems have no guaranteed order (`Public/Tickable.h:62`, `Private/Tickable.cpp:66–92`) |
+| `Configure(Mode, CountCap, BudgetMs)` | Called once by the director. It also builds `SpawnParameters` once, outside every timed loop (code review): `AlwaysSpawn` so a collision test never moves or rejects a seeded position, and `bDeferConstruction` only for B1 |
+| `FillPool(World, Entries)` | B3: one parked actor per wave entry, spawned at the park location and parked at once. The director calls it on the first warm-up frame, when the world has begun play, so each actor's BeginPlay has already run (inside `SpawnActor`) when it is parked |
+| `RequestWave(TConstArrayView<FSPWaveEntry>)` | Appends the wave to `Pending` (06 §11) |
+| `RequestDespawn()` | Sets the despawn flag **and cancels the entries not brought in yet** (`Pending.Reset()`). A capped baseline that hasn't finished by the despawn time leaves its wave incomplete, which the run reports, instead of spawning the rest afterwards and leaking them into the next cycle (code review) |
+| `MayStartAnother(ItemsThisFrame, FrameStartCycles)` | The **only** difference between the paced baselines. B1: `ItemsThisFrame < CountCap`. B2: elapsed `< BudgetMs`, checked **before** each item, so the item that starts just under the limit runs to completion: the overrun under test (H4), exactly like Mass and SpawnBudget (01b §5). B0 and B3: always (the whole wave in one frame) |
+| `RunFrame(World)` | `Live.Reserve(...)` once; `Start = Cycles64()`; bring in pending entries while `MayStartAnother`; then, if a despawn is requested, take out live actors under the **same** frame limit; `WorkMs` from the same clock as SpawnPacer (06 §12) |
+| CSV stats, once per frame | `SPBaseline/WorkMs`; `Added` and `Removed` (spawned or taken from the pool; destroyed or parked: one meaning in every baseline, so B3 doesn't report parked actors as "destroyed", code review); `Live`; for B1 also `ConstructMs` and `FinishMs` |
+| `BringIn` for B3 | `TakeFromPool(Class)`; then `SetActorTransform(..., ETeleportType::ResetPhysics)` (06 §16), un-hide, re-enable collision and the actor tick, `PrepareForReuse()` (the user callback, D2), then `NotifyReady()`: a reused actor doesn't run BeginPlay again, so the pool reports it ready itself. **On a pool miss it spawns**, as a competent pool does (code review) |
+| `BringIn` for B0 / B2 / a B3 miss | Plain `SpawnActor`: construction, registration, construction script and BeginPlay all happen inside it |
+| `BringIn` for B1 | `SpawnActor` with `bDeferConstruction` = `SpawnActorDeferred` (`Classes/Engine/World.h:3851–3871`), then `FinishSpawning(Entry.Transform)` **in the same frame** (06 §15). Two `Cycles64` reads split the time into `ConstructMs` (construction + native component registration, `Actor.cpp:4333–4337`) and `FinishMs` (construction script, `InitializeComponents`, `PostInitializeComponents`, BeginPlay, `Actor.cpp:4415–4529`). That split is H1's first measurement, made before SpawnPacer exists |
+| `TakeFromPool(Class)` | Pops until a valid actor turns up: something else may have destroyed a parked one (Mass does the same, `MassActorSpawnerSubsystem.cpp:244–249`) |
+| `TakeOutLast()` → `bool` | Pops the last live actor. Already gone: `false`, not counted. B3: `Park` and back into the pool. Otherwise `Destroy()` |
+| `static void Park(ASPWaveActor&)` | B3's reset: `PrepareForParking()` (stops the think timer), `SetActorHiddenInGame(true)`, `SetActorEnableCollision(false)`, `SetActorTickEnabled(false)` (06 §16), move to `ParkLocation` (1 km below the arena). PoolManager's three switches plus the callback its user would write. It does **not** switch off component ticks or reset gameplay state: that unchecked reset is what SpawnPacer's pool addresses (S7, S8) |
+| `UPROPERTY(Transient) TMap<TObjectPtr<UClass>, FSPPooledActors> Pool;` | GC-visible parked actors, by class (06 §18) |
+
+### D2. `SPWaveActor` and `SPWaveBrainComponent` (S3 additions)
+
+| Line | What it does, and why |
+|---|---|
+| `void NotifyReady() const;` | The one "ready" call: from the end of `BeginPlay`, and from a pool that reuses the actor. `GetSubsystem<USPBenchmarkSubsystem>()` is null without the director, so it is guarded |
+| `virtual void PrepareForReuse();` | A pool is about to reuse the actor at its new place: restart what a new life starts. Base: `Brain->StartThinking()`. `ASPDrone` overrides it to also take its new location as the circle's centre (code review: a reused drone otherwise flew back to where it was first spawned, the park location) |
+| `void PrepareForParking();` | A pool is parking the actor: `Brain->StopThinking()`, so parked enemies don't keep thinking (code review) |
+| `USPWaveBrainComponent::StartThinking()` / `StopThinking()` | The think timer as two public calls: BeginPlay and a reuse start it; EndPlay and parking stop it (`ClearTimer`, 06 §9) |
+
+### D3. `SPBenchmarkSubsystem` (S3 additions)
+
+| Line | What it does, and why |
+|---|---|
+| `-SPCountCap=K`, `-SPBudgetMs=MS` | B1's cap and B2's budget, read in `ReadRunSettings`, validated (≥ 1, > 0), and written into the CSV metadata. `run_bench.py` passes K = 14 and 2.0 ms (09 S3) |
+| `static TOptional<ESPBaseline> ParseBaseline(const FString&)` | Maps `-SPConfig` to a baseline; empty for an unknown name (06 §17). Validation refuses an unknown name |
+| `if (const TOptional<ESPBaseline> Mode = ParseBaseline(...)) { Baseline->Configure(*Mode, ...); }` | Configures the spawner only when there is a baseline: from S5, the SpawnPacer configurations have none, and `GetValue()` on an empty `TOptional` would assert (code review) |
+| `bPoolToFill` and the first warm-up frame | B3's pool is filled on the first warm-up frame, then that frame `break`s, so the capture can start on the next frame at the earliest: the fill's hitch never lands in it, whatever the warm-up length (code review). Filling earlier, in `OnWorldBeginPlay`, was tried and rejected: the world hasn't begun play yet, so the actors' BeginPlay would run *after* they were parked and restart their think timers |
+| `-SPSpawnTimer` | Brackets the capture with the engine's `spawnactortimer start` / `stop` (`GEngine->Exec`, which passes console commands on to `IConsoleManager::ProcessUserConsoleInput`, `Private/UnrealEngine.cpp:5519, 5722`). The stop logs `<class>,<average s>,<total s>,<count>` per class (`Private/GameFramework/SpawnActorTimer.cpp:110–117`): the engine's own per-class cost, a cross-check for H2 and for our per-stage timing from S5 |

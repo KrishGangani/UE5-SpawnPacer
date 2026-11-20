@@ -25,7 +25,9 @@ class ACameraActor;
  *   next frame                   the run report is written; with -SPExit the game quits a few frames later
  *
  * Command line (all optional):
- *   -SPConfig=B0      the configuration (S1: B0 only)
+ *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2)
+ *   -SPCountCap=K     B1: actors per frame (default 25; the batch script passes the calibrated value)
+ *   -SPBudgetMs=MS    B2: the per-frame time cap, the same budget SpawnPacer gets (default 2.0)
  *   -SPWaveSize=N     actors per wave (default 0: no workload, a normal empty map)
  *   -SPWaves=N        wave cycles in the capture (default 3)
  *   -SPSeed=S         seed for the wave's class order and positions (default 1)
@@ -35,6 +37,7 @@ class ACameraActor;
  *   -SPLife=SEC       seconds from a wave request to its despawn (default 6)
  *   -SPGCAfter=SEC    seconds from the despawn request to the forced GC (default 2)
  *   -SPRunTag=NAME    run report file name and CSV metadata tag (default "run"; made a valid file name)
+ *   -SPSpawnTimer     run the engine's spawnactortimer over the capture: per-class average spawn time in the log
  *   -SPExit           quit when the run is finished (Game worlds only: in PIE it would close the editor);
  *                     a run whose settings are invalid quits at once with exit code 2
  */
@@ -67,6 +70,8 @@ private:
 	struct FRunSettings
 	{
 		FString Config = TEXT("B0");
+		int32 CountCap = 25;
+		double BudgetMs = 2.0;
 		int32 WaveSize = 0;
 		int32 Waves = 3;
 		int32 Seed = 1;
@@ -77,6 +82,7 @@ private:
 		double GCAfterSeconds = 2.0;
 		FString RunTag = TEXT("run");
 		bool bExitWhenDone = false;
+		bool bSpawnTimer = false;
 	};
 
 	enum class ERunPhase : uint8
@@ -111,6 +117,9 @@ private:
 
 	static FRunSettings ReadRunSettings();
 
+	/** Maps -SPConfig to a baseline; unset for an unknown name (and, from S5, for the SpawnPacer configurations). */
+	static TOptional<ESPBaseline> ParseBaseline(const FString& Config);
+
 	/** Logs settings that would silently produce a misleading run. Returns false if the run can't go ahead. */
 	bool ValidateRunSettings() const;
 
@@ -142,6 +151,7 @@ private:
 	int32 ReadyThisWave = 0;
 	TArray<FWaveRecord> WaveRecords;
 	int32 FramesSinceEnd = 0;
+	bool bPoolToFill = false;   // B3: fill the pool on the first warm-up frame
 
 	/** The seeded wave: the same list is requested in every cycle and every configuration. */
 	UPROPERTY(Transient)

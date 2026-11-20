@@ -26,3 +26,6 @@ Build/
 Benchmarks/Raw/*
 !Benchmarks/Raw/*_manifest.json
 Benchmarks/*_console.txt
+
+# Parked code and doc drafts (never committed; the shared session scratchpad must not hold them).
+_wip/

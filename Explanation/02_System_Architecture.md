@@ -117,7 +117,7 @@ Three of the eight are UObject types (the subsystem, the interface, the settings
 |---|---|---|
 | `ASPWaveActor` | `AActor` (implements `ISpawnPacerPoolable` from S7) | The demo actor base: a root, a `USPWaveBrainComponent`, and N static-mesh components. Each subclass's constructor calls one shared protected helper with its own N (UObject constructors can't take extra arguments of their own), so every subclass has its own CDO and component set, and the cost model learns per class |
 | `ASPDrone`, `ASPCrate`, `ASPGrunt`, `ASPBoss` | `ASPWaveActor` | 1 / 3 / 6 / 24 mesh components (01 §6.1); the Drone moves every tick |
-| `USPWaveBrainComponent` | `UActorComponent` | Gameplay state as `UPROPERTY`s (health, ammo, state), a calibrated amount of BeginPlay work, a repeating timer, simulated use during the actor's life (damage, an attached marker actor, a runtime component), and the correct reset in `OnPoolAcquired`/`OnPoolReleased` |
+| `USPWaveBrainComponent` | `UActorComponent` | Gameplay state as `UPROPERTY`s (health, ammo, state), a calibrated amount of BeginPlay work, a think timer that can be stopped and restarted (`StartThinking` / `StopThinking`, S3). From S7: simulated use during the actor's life (damage, an attached marker actor, a runtime component) and the correct reset in `OnPoolAcquired`/`OnPoolReleased` |
 | `ASPLeakyGrunt` | `ASPGrunt` | The **seeded-defect** class for SC5: `-SPSeedLeak=<kind>` makes its reset skip exactly one thing |
 | `USPBenchmarkSubsystem` | `UTickableWorldSubsystem` (Game/PIE) | The director (tickable because it advances the script every frame): reads `-SP…=` values, places the fixed camera, builds the seeded wave list, drives the 3-cycle script, forces the scripted GC, writes CSV events and metadata, measures wave latency, writes a run report, exits |
 | `USPBaselineSpawner` | `UObject`, owned by the director | Baselines B0–B3 (01 §6.2), each a competent, simple implementation, timing its own spawn work with the same clock as SpawnPacer. **Changed in S1:** planned as a tickable subsystem, but two tickable subsystems have no guaranteed order (the engine keeps new tickables in a `TMap`, `Public/Tickable.h:62`, `Private/Tickable.cpp:66–92`), so a request could be served this frame or the next depending on luck. The director now calls the spawner's `RunFrame()` itself, right after advancing the script: request and work are always in the same frame |
@@ -278,9 +278,11 @@ The same seeded wave list (class order and transforms) is used in every configur
 | B0 | `USPBaselineSpawner`: plain `SpawnActor` × 500 in the request frame | `Destroy` × 500 in the despawn frame | `-SPConfig=B0` |
 | B1 | same: queue; `SpawnActorDeferred` + `FinishSpawning`, K per frame | `Destroy`, K per frame | `-SPConfig=B1 -SPCountCap=K` |
 | B2 | same: plain `SpawnActor` while elapsed < budget (check between items) | `Destroy` while elapsed < budget | `-SPConfig=B2` |
-| B3 | same: pool filled in warm-up (unpaced); 500 un-hidden etc. in the request frame | 500 hidden etc. in the despawn frame | `-SPConfig=B3` |
+| B3 | same: pool filled on the first warm-up frame (unpaced); 500 un-hidden etc. in the request frame, with `PrepareForReuse` | 500 parked in the despawn frame, with `PrepareForParking` | `-SPConfig=B3` |
 | SPS | `USpawnPacerSubsystem`, spawn path, class split modes from settings | Destroy jobs | `-SPConfig=SPS` |
 | SPP | `USpawnPacerSubsystem`, pool path; Background pre-warm in warm-up | Release jobs | `-SPConfig=SPP` |
+
+**A despawn cancels what a capped spawner hasn't brought in yet** (S3): if B1, B2 or SpawnPacer haven't finished the wave by its despawn time, the rest is dropped and the wave never completes, which the run reports as a failure instead of leaking actors into the next cycle.
 
 **Equal measurement cost:** every spawner times its own work with `FPlatformTime::Cycles64` and publishes one value per frame (`SpawnPacer/WorkMs` or `SPBaseline/WorkMs`), so the measurement overhead is the same in every configuration. Wave completion is detected the same way everywhere: each demo actor's brain reports "I have begun play / I have been acquired" to the director.
 
@@ -359,4 +361,5 @@ Blueprint-only actors can be paced and pooled, but only as `Whole` or `Deferred`
 | Baselines: plain `SpawnActor`, deferred pattern, a pool | Plus B2, the check-between time cap, at the same budget | It is the existing pacers' model (Mass, SpawnBudget): the fair "best existing" bar |
 | (S1) The baseline spawner as a tickable subsystem | A `UObject` the director drives each frame | Tick order between tickable subsystems is not guaranteed (see §4.2) |
 | (S1) The director as a plain world subsystem | A tickable world subsystem | It advances the script and drives the spawner every frame, as UE5-UpdateBudget's director does |
+| (S3) The simple pool resets nothing | B3 calls two demo callbacks, `PrepareForReuse` and `PrepareForParking` (think timer, drone circle) | Without them a reused drone flew back to the park location and parked enemies kept thinking: a broken baseline, not a simple one (S3 code review). Gameplay state is still not reset, on purpose |
 | (S1) SpawnPacer requests are served the frame they are made | Possibly one frame later | The plugin's subsystem ticks on its own; if it ticks before the director in a frame, a request made that frame waits for the next. At most one frame (about 1.5% of a 60-frame wave) against SpawnPacer, reported, not hidden |

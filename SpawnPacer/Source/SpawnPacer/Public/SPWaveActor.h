@@ -30,6 +30,16 @@ public:
 
 	USPWaveBrainComponent* GetBrain() const { return Brain; }
 
+	/** Tells the director this actor is ready. Called at the end of BeginPlay, and by a pool when it reuses the actor
+	 *  (a reused actor doesn't run BeginPlay again). Does nothing in worlds without the director. */
+	void NotifyReady() const;
+
+	/** A pool is about to reuse this actor at its new place: restart what a new life starts. */
+	virtual void PrepareForReuse();
+
+	/** A pool is parking this actor: stop what would otherwise keep running while it waits. */
+	void PrepareForParking();
+
 protected:
 	/** A subclass's own BeginPlay work. Called by BeginPlay after Super::BeginPlay and before the ready notification. */
 	virtual void WaveBeginPlay() {}
@@ -58,11 +68,13 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	//~ End AActor
 
+	virtual void PrepareForReuse() override;
+
 protected:
 	virtual void WaveBeginPlay() override;
 
 private:
-	/** Where BeginPlay found the drone; the circle is drawn around it. */
+	/** Where BeginPlay (or a reuse) found the drone; the circle is drawn around it. */
 	FVector Origin = FVector::ZeroVector;
 };
 

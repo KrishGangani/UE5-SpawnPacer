@@ -57,3 +57,16 @@
 | **Despawn or GC outside its cycle** | Analysis windows overlap; a GC lands in the next wave's window | `ValidateRunSettings` refuses such a run with an `Error:` | The run's log |
 | **Wave completion counted differently per configuration** | Latency isn't comparable | Every configuration completes through `NotifyActorReady()` at the end of BeginPlay (02 §9) | Compare `ready` in the run report with the wave size |
 | **Expecting `ForceGarbageCollection` to collect now** | The GC frame is the next frame or later | Treat it as "armed"; the GC window is 3 frames (01 §6.3) | CSV: the frame after `GCForced` |
+
+## Baselines B1–B3 (step S3): mistakes the S3 code review and its fixes caught
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| ⚠ caught: **a reused actor still holds state captured at its first BeginPlay** (the drone's circle centre) | Reused drones fly back to the park location | A per-use callback (`PrepareForReuse`) for everything BeginPlay captured | Watch one pooled drone over two waves |
+| ⚠ caught: **parked actors keep running timers** | Frame time between waves differs from the other baselines | `PrepareForParking` stops the think timer; SpawnPacer's pool will clear all timers (02 §11) | `ListTimers` on the timer manager; count `Think` calls while parked |
+| ⚠ caught: **filling a pool before the world has begun play** | Parked actors still think: their BeginPlay ran *after* they were parked | Fill on the first warm-up frame, once the world has begun play (05 D3) | Log BeginPlay and park order for one actor |
+| ⚠ caught: **a despawn that leaves unserved spawns pending** | Actors from one wave appear in the next; `DespawnComplete` never fires | `RequestDespawn` cancels what wasn't brought in yet; the wave is reported incomplete | Compare `Added` per wave with the wave size |
+| ⚠ caught: **a pool that silently drops a request on a miss** | One actor short per wave; `WaveComplete` never fires | Pop until valid, then spawn on a miss (05 D1) | Destroy a parked actor on purpose |
+| ⚠ caught: **a "Destroyed" counter that also counts parked or already-gone actors** | Stats disagree with what happened | One meaning per stat: `Added` / `Removed`, and only what the spawner really did | Destroy actors behind the spawner's back and read the stats |
+| **Building per-item setup inside a timed loop** (spawn parameters, array growth) | Baseline work includes bookkeeping the pattern doesn't need | Build parameters once in `Configure`; `Reserve` before the loop | Compare `WorkMs` with the engine's `ActorSpawning` column |
+| **A count cap tuned for one class mix** | B1's frames swing with the classes at the head of the queue | That is the measured weakness (H3), not a bug to fix in the baseline | `SPBaseline/WorkMs` distribution in B1 |

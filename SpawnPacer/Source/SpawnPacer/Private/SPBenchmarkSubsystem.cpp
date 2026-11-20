@@ -64,6 +64,8 @@ USPBenchmarkSubsystem::FRunSettings USPBenchmarkSubsystem::ReadRunSettings()
 	const TCHAR* CommandLine = FCommandLine::Get();
 	FRunSettings Read;
 	FParse::Value(CommandLine, TEXT("SPConfig="), Read.Config);
+	FParse::Value(CommandLine, TEXT("SPCountCap="), Read.CountCap);
+	FParse::Value(CommandLine, TEXT("SPBudgetMs="), Read.BudgetMs);
 	FParse::Value(CommandLine, TEXT("SPWaveSize="), Read.WaveSize);
 	FParse::Value(CommandLine, TEXT("SPWaves="), Read.Waves);
 	FParse::Value(CommandLine, TEXT("SPSeed="), Read.Seed);
@@ -74,17 +76,32 @@ USPBenchmarkSubsystem::FRunSettings USPBenchmarkSubsystem::ReadRunSettings()
 	FParse::Value(CommandLine, TEXT("SPGCAfter="), Read.GCAfterSeconds);
 	FParse::Value(CommandLine, TEXT("SPRunTag="), Read.RunTag);
 	Read.bExitWhenDone = FParse::Param(CommandLine, TEXT("SPExit"));
+	Read.bSpawnTimer = FParse::Param(CommandLine, TEXT("SPSpawnTimer"));
 	// The tag names a file: keep it a plain file name, whatever the command line held.
 	Read.RunTag = FPaths::MakeValidFileName(Read.RunTag, TEXT('_'));
 	return Read;
 }
 
+TOptional<ESPBaseline> USPBenchmarkSubsystem::ParseBaseline(const FString& Config)
+{
+	if (Config == TEXT("B0")) { return ESPBaseline::B0; }
+	if (Config == TEXT("B1")) { return ESPBaseline::B1; }
+	if (Config == TEXT("B2")) { return ESPBaseline::B2; }
+	if (Config == TEXT("B3")) { return ESPBaseline::B3; }
+	return {};
+}
+
 bool USPBenchmarkSubsystem::ValidateRunSettings() const
 {
 	bool bValid = true;
-	if (Settings.Config != TEXT("B0"))
+	if (!ParseBaseline(Settings.Config).IsSet())
 	{
-		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not implemented yet (step S1 has B0 only)."), *Settings.Config);
+		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3)."), *Settings.Config);
+		bValid = false;
+	}
+	if (Settings.CountCap < 1 || Settings.BudgetMs <= 0.0)
+	{
+		UE_LOG(LogSPBench, Error, TEXT("Invalid limits: count cap %d (>= 1), budget %.3f ms (> 0)."), Settings.CountCap, Settings.BudgetMs);
 		bValid = false;
 	}
 	if (Settings.WaveSize > SPBench::MaxWaveSize || Settings.Waves < 1 || Settings.WarmupSeconds < 0.0)
@@ -129,6 +146,11 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	WaveHash = BuildWave();
 	Baseline = NewObject<USPBaselineSpawner>(this);
+	if (const TOptional<ESPBaseline> Mode = ParseBaseline(Settings.Config))
+	{
+		Baseline->Configure(*Mode, Settings.CountCap, Settings.BudgetMs);
+		bPoolToFill = (*Mode == ESPBaseline::B3);
+	}
 	Camera = InWorld.SpawnActor<ACameraActor>(SPBench::CameraLocation, SPBench::CameraRotation);
 	BeginPlayTime = InWorld.GetTimeSeconds();
 	Phase = ERunPhase::WarmUp;
@@ -139,6 +161,8 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	// The run's description goes into the CSV itself, so every capture is self-describing.
 	CSV_METADATA(TEXT("SPRunTag"), *Settings.RunTag);
 	CSV_METADATA(TEXT("SPConfig"), *Settings.Config);
+	CSV_METADATA(TEXT("SPCountCap"), *FString::FromInt(Settings.CountCap));
+	CSV_METADATA(TEXT("SPBudgetMs"), *FString::SanitizeFloat(Settings.BudgetMs));
 	CSV_METADATA(TEXT("SPWaveSize"), *FString::FromInt(Wave.Num()));
 	CSV_METADATA(TEXT("SPWaves"), *FString::FromInt(Settings.Waves));
 	CSV_METADATA(TEXT("SPSeed"), *FString::FromInt(Settings.Seed));
@@ -278,11 +302,26 @@ void USPBenchmarkSubsystem::Tick(float DeltaTime)
 	switch (Phase)
 	{
 	case ERunPhase::WarmUp:
+		if (bPoolToFill)
+		{
+			// B3's pool is filled on the first warm-up frame, when the world has begun play: each actor's BeginPlay runs
+			// inside its SpawnActor, so parking really comes after it (filled earlier, in OnWorldBeginPlay, BeginPlay would
+			// run later and restart the parked enemies' think timers). The capture can start on the next frame at the
+			// earliest, so the fill's hitch never lands in it, whatever the warm-up length.
+			bPoolToFill = false;
+			Baseline->FillPool(*World, Wave);
+			break;
+		}
 		if (Now - BeginPlayTime >= Settings.WarmupSeconds)
 		{
 			BenchStartTime = Now;
 			Phase = ERunPhase::Capture;
 			CSV_EVENT(SPBench, TEXT("BenchStart"));
+			if (Settings.bSpawnTimer)
+			{
+				// The engine's own per-class spawn timer (non-Shipping, 01b 4): a cross-check of our per-class costs.
+				GEngine->Exec(World, TEXT("spawnactortimer start"));
+			}
 			UE_LOG(LogSPBench, Display, TEXT("BenchStart at %.3f s"), Now);
 		}
 		break;
@@ -292,6 +331,10 @@ void USPBenchmarkSubsystem::Tick(float DeltaTime)
 		{
 			// The stop request is processed at the end of this frame; the report is written next frame, outside the capture.
 			CSV_EVENT(SPBench, TEXT("BenchEnd"));
+			if (Settings.bSpawnTimer)
+			{
+				GEngine->Exec(World, TEXT("spawnactortimer stop")); // logs "<class>,<average s>,<total s>,<count>" lines
+			}
 			Phase = ERunPhase::Done;
 			FramesSinceEnd = 0;
 			UE_LOG(LogSPBench, Display, TEXT("BenchEnd after %d waves"), Settings.Waves);

@@ -41,20 +41,30 @@ void USPWaveBrainComponent::BeginPlay()
 	}
 	WorkSink = Sink;
 
+	StartThinking();
+}
+
+void USPWaveBrainComponent::StartThinking()
+{
 	if (bThinks)
 	{
 		GetWorld()->GetTimerManager().SetTimer(ThinkTimer, this, &USPWaveBrainComponent::Think, SPBrain::ThinkInterval, true);
 	}
 }
 
-void USPWaveBrainComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+void USPWaveBrainComponent::StopThinking()
 {
-	// The engine doesn't clear timers on EndPlay (01b #11). A destroyed actor's timer would simply stop firing, but a
-	// pooled one (S7) would not, so the brain clears its own.
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(ThinkTimer);
 	}
+}
+
+void USPWaveBrainComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// The engine doesn't clear timers on EndPlay (01b #11). A destroyed brain's timer would simply stop firing, but a
+	// pooled one would not, so the brain clears its own.
+	StopThinking();
 	Super::EndPlay(EndPlayReason);
 }
 
