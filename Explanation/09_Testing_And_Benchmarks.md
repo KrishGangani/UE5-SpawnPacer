@@ -65,6 +65,51 @@ The S1 checks above ran inside the S2 calibration job, using the S2 harness (`ru
   - Reuse: nothing to reuse yet; the engine's `Algo::RandomShuffle` uses the global random stream, so the seeded Fisher–Yates stays.
 - Found by the first run: the exit-code behaviour (S1-c).
 
+
+---
+
+## Step S2 · Harness and calibration (2026-11-21)
+
+Batch **`2026-11-21_031105_calib`** (job `20261121_025813_920cda`): B0 only, BeginPlay work 0 / 2000 / 4000 / 8000 iterations, 2 runs each + 1 priming run, wave size 500, 3 waves per run. Same build and environment as S1 (the manifest records `cpu_affinity: 0xFFFF (performance cores only; hybrid CPU)`, AC power, power plan Turbo). A run takes about 12 s of wall time: fixed step runs as fast as the frames allow, so 36 simulated seconds of capture at about 4 ms per frame pass quickly.
+
+| # | Check | Result |
+|---|---|---|
+| S2-a | **Tool self-test** (`python -I csv_stats.py --selftest`) | ✅ percentiles 5.5 / 9.55 / 9.91 on 1…10; event parsing; windows; the FrameTime lag; hitch counts; latency |
+| S2-b | **Where a frame's time is written** | ⚠ finding: on every B0 wave row, `SPBaseline/WorkMs` ≈ 34–55 ms and `GameThreadTime` ≈ 40–59 ms, but `FrameTime` ≈ 2–11 ms; the **next** row's `FrameTime` holds the spike. The engine computes `FrameTime` at the start of the next frame (01b B-7). `csv_stats.py` now reads `FrameTime` one row later (`FRAME_TIME_LAG`); the summary below was recomputed from the raw CSVs with that rule (the manifest is unchanged) |
+| S2-c | **Calibration of the BeginPlay work** | Table below |
+| S2-d | **Despawn and GC** (H5) | B0's destroy of 500 actors costs about 6–9 ms of spawner work (D-window max 11–14 ms frame time), and the forced full GC frame about 7–10 ms. **No frame over 33.3 ms in any D or GC window.** At this workload, H5 ("destroy and GC hitch like spawning") is not supported for B0; the S3 baseline batch measures it properly |
+| S2-e | **Run-to-run spread of a single spike frame** | Large: the same setting gives wave-frame maxima from 41 to 61 ms (work 2000). One frame's cost depends on cache and scheduler state, so hitch metrics need several waves and runs, which the protocol already has (3 waves × 6 runs in the main batch) |
+
+**S2-c: B0 wave frame against BeginPlay work** (median across 2 runs [min–max]; 100 enemies per wave do the work):
+
+| Work (iterations) | Wave window FrameTime max (ms) | Spawner work in the wave frame, max (ms) | Pre-wave median (ms) | Frames > 33.3 ms per run |
+|---|---|---|---|---|
+| 0 | 43.11 [40.50–45.72] | 38.90 [36.44–41.36] | 2.91 | 3 (one per wave) |
+| 2000 | 51.03 [41.30–60.76] | 46.25 [37.74–54.76] | 2.92 | 3 |
+| 4000 | 49.17 [43.82–54.53] | 44.93 [40.39–49.48] | 2.87 | 3 |
+| 8000 | 56.40 [53.73–59.07] | 52.27 [49.77–54.77] | 2.92 | 3 |
+
+**Decision: 20000 iterations.**
+- Across the 24 wave frames, the spawner's work grows about **1.7 ms per 1,000 iterations** for the wave's 100 enemies: about 17 ns per iteration per enemy (mean spawner work over the six wave frames of each setting: 36.5 ms at 0, 49.8 ms at 8000).
+- The 01 §6.1 target is a plain-`SpawnActor` wave frame of at least 66.7 ms. Extrapolating linearly, 20000 iterations give about 36.5 + 1.66 × 20 ≈ 70 ms of spawn work, so the frame lands above the target with some margin. Each enemy's BeginPlay then does about 0.33 ms of set-up work. That is heavy, but plausible for an enemy that builds its AI and loads its data, and it is synthetic and stated as such (02 §13).
+- The steady state stays far below the 12 ms ceiling: pre-wave median 2.9 ms, wave-window median about 3.7 ms with 500 live actors. So the 2 ms budget fits easily.
+- `run_bench.py` now passes `-SPWork=20000` by default. **The extrapolation is checked, not assumed:** the S3 baseline batch reports B0's wave-frame maximum at 20000, and if it is below 66.7 ms the value is raised before any SpawnPacer code exists.
+
+**Audit trail for S2:**
+- The tools are copies of UE5-UpdateBudget's, adapted. S2-b was found by reading the calibration CSVs row by row before trusting the summary. The summary's spawn-work column was changed from p99 to max for the same reason (a p99 over 240 frames hides the one frame that does a whole B0 wave).
+- `code-review` (medium) on both tools: 9 findings, 5 important + 4 nits, **all fixed** (05 C1–C2):
+  - windows now clipped to the batch's own script timings;
+  - failed runs excluded from the summary and listed;
+  - wait after `taskkill` and catch a locked file;
+  - AC power from `PowerOnline`;
+  - a wave that never completes is a failure;
+  - FrameTime rows counted separately;
+  - at least 2 runs per combination;
+  - `_W<work>` in the naming rule;
+  - latency as median across runs.
+- `simplify` (self-review, four angles): events parsed once per capture (efficiency). Nothing to reuse beyond the copied functions; no altitude issue.
+- The calibration summary was recomputed with the reviewed tools; every number in S2-c is unchanged.
+
 ---
 
 ## Phases 5–8 (to be written)

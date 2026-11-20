@@ -6,7 +6,8 @@
 |---|---|---|
 | A | Phase 4, F1–F4 (foundation) | `.uproject`, two `Target.cs`, two `Build.cs`, two module `.cpp`, `.uplugin`, three config `.ini`, `Tools\*.bat`, `Tools\perf_cores.py` |
 | B | S1 (workload, B0 only) | `SPWaveActor`, `SPWaveBrainComponent`, `SPBaselineSpawner`, `SPBenchmarkSubsystem`, `DefaultGame.ini` |
-| C… | S2 onwards | added with each step |
+| C | S2 (measurement tools) | `Tools\csv_stats.py`, `Tools\run_bench.py` |
+| D… | S3 onwards | added with each step |
 
 ---
 
@@ -280,7 +281,7 @@ protected:
 | `UPROPERTY(VisibleInstanceOnly) float Health … int32 Ammo … ESPBrainState State … int32 ThinkCount` | Gameplay state, **private** with `const` getters (no outside code may change it). `UPROPERTY` on purpose: the reset verifier of step S8 compares reflected properties. `VisibleInstanceOnly`: visible on a live instance in the editor's details panel, never editable |
 | `float WorkSink` (not a `UPROPERTY`) | The set-up loop's result, stored in a member so the optimiser can't delete the loop (04 §11) |
 | `FTimerHandle ThinkTimer` | The handle the timer manager fills in; needed to clear the timer (06 §9) |
-| `TAutoConsoleVariable<int32> CVarBeginPlayWork(TEXT("sp.Demo.BeginPlayWork"), 4000, …, ECVF_Default)` | One value for every brain, whoever spawned it. `ECVF_Default` so it can be set from the command line and config (cheat flags can't be, UE5-UpdateBudget 01b #11). 4000 is a starting value; S2 calibrates it and records the choice in 09 |
+| `TAutoConsoleVariable<int32> CVarBeginPlayWork(TEXT("sp.Demo.BeginPlayWork"), 4000, …, ECVF_Default)` | One value for every brain, whoever spawned it. `ECVF_Default` so it can be set from the command line and config (cheat flags can't be, UE5-UpdateBudget 01b #11). The code default 4000 was the starting value; the S2 calibration chose **20000**, which `run_bench.py` passes to every run as `-SPWork=20000` (09 S2-c) |
 | `const int32 Iterations = FMath::RoundToInt32(CVar.GetValueOnGameThread() * BeginPlayWorkScale);` | `GetValueOnGameThread()` is the thread-correct read for game-thread code. Rounded, because a fractional scale is allowed |
 | `for (...) { Sink = FMath::Sin(Sink + 0.001f * Index); }` | A **dependent chain**: each step needs the previous result, so the CPU can't run iterations in parallel and the compiler can't vectorise it. The cost is therefore proportional to the count, which makes it a calibratable dial |
 | `World->GetTimerManager().SetTimer(ThinkTimer, this, &USPWaveBrainComponent::Think, SPBrain::ThinkInterval, true);` | A repeating 0.5 s timer bound to a member function (06 §9). `true` = loop |
@@ -345,3 +346,50 @@ protected:
 ### B5. `Config\DefaultGame.ini` (S1 addition)
 
 `[/Script/UnrealEd.ProjectPackagingSettings] +DirectoriesToAlwaysCook=(Path="/Engine/BasicShapes")`: the demo meshes are referenced only from C++ (`ConstructorHelpers`). No map references them, so without this line the cooker would leave them out and packaged wave actors would be invisible (UE5-UpdateBudget hit the same).
+
+---
+
+## Part C · Step S2: the measurement tools (`Tools\`)
+
+### C1. `csv_stats.py`
+
+`percentile`, `summarize`, `load_capture`, `frame_events` and `column_values` are copied unchanged from UE5-UpdateBudget's `csv_stats.py` (each repository stands alone). The additions implement 01 §6.3.
+
+| Lines | What they do, and why |
+|---|---|
+| Module docstring | The rules, so every number can be reproduced: end header, events, linear-interpolation percentiles, the four windows, hitch thresholds, latency |
+| `DEFAULT_COLUMNS` | Frame, game-thread, render-thread and GPU time; both spawners' `WorkMs`; the engine's own `ActorSpawning` / `ActorDestroying` columns (01b §4), for cross-checking our timing |
+| `FRAME_TIME_LAG = 1` | **Found in the S2 calibration (09 S2-b):** the engine writes frame N's `FrameTime` into row N+1. It computes it at the *start* of a frame, as the time since the previous start (`FCsvProfiler::UpdateFrameTime`, `Core/Private/ProfilingDebugging/CsvProfiler.cpp:4369–4390`), while `GameThreadTime` and our own stats belong to their own row. So every window reads `FrameTime` one row later than the other columns. *Rejected:* `csv.UseLegacyFrameTime 1` (`CsvProfiler.cpp:150–153`), which restores end-of-frame timing but changes an engine default for every run |
+| `HITCH_MS = 33.3`, `MISSED_FRAME_MS = 16.7` | Two and one 60 Hz refresh intervals (01 §6.3) |
+| `csv.field_size_limit(1 << 30)` | The metadata row can exceed Python's default field limit |
+| `percentile` | `position = p/100 × (n − 1)`, then linear interpolation between the two neighbours (numpy's default). The self-test checks 5.5 / 9.55 / 9.91 on 1…10 by hand |
+| `load_capture` | Reads the whole file; a finalised capture ends with the full header and the `[key],value` metadata row. **The end header is used for column lookup**, because a stat first written mid-capture exists only there (01b B-2). A capture without them is flagged, never silently trusted |
+| `frame_events` | Splits the `EVENTS` cell (`Category/Name##timestamp;…`) into names |
+| `events_per_frame(header, data)` | Every frame's events, parsed **once** per capture (simplify pass: the analysis looks them up five times, and each lookup used to re-parse every row) |
+| `event_frames(events, name)` | Indices of the frames that carry `SPBench/<name>` |
+| `window_rows(data, starts, length, before, offset)` | Pools the frames of every window of one type over all waves; `offset` shifts every window (by `FRAME_TIME_LAG` for `FrameTime`); clips at the capture's ends, and the caller reports how many frames each window actually held |
+| `summarize_window(header, data, starts, length, columns, before)` | Per window type: statistics of each column (`FrameTime` from the shifted rows, the rest from the event-aligned rows), plus `over_33_3ms` and `over_16_7ms` on `FrameTime`. `frames` counts the event-aligned rows and `frame_time_frames` the shifted ones, which can be one shorter at the end of a capture (code review: the shortfall used to be hidden) |
+| `wave_latencies` | For each `WaveRequested`, the first `WaveComplete` at or after it and before the next request; `None` if the wave never completed (that is a failure the summary shows) |
+| `analyse(...)` | One capture → events, wave count, latencies and the W / D / GC / PRE windows. Window lengths come from `--fps` and seconds, so a different fixed step only needs a flag |
+| `selftest()` | Hand-worked cases: percentiles, summary, event parsing, a ten-frame capture with a wave on frame 2 (completes on 4) whose 40 ms frame time sits in row 3, a 3-frame window (40, 20, 10 ms → one frame over 33.3, two over 16.7, median 20, max 40), a pre-window with and without the lag, and a clipped window |
+| `main()` | Prints per capture and window; `--json` writes everything for later processing |
+
+### C2. `run_bench.py`
+
+Copied from UE5-UpdateBudget's `run_bench.py` and adapted. What changed, and why:
+
+| Part | What it does, and why |
+|---|---|
+| `from perf_cores import KERNEL32, applied_mask, performance_core_mask, pin_self` | The pinning code lives in one copied file (05 A9), imported from the same folder |
+| `EXE = …\Build\Windows\SpawnPacer\Binaries\Win64\SpawnPacer.exe` | The **real** game executable, not the bootstrap, so the exit code is the game's own (09 F-4) |
+| `STARTUP_MARGIN_SECONDS = 240.0` | Per-run timeout = warm-up + waves × cycle + this margin. Generous, because a first run once took 27 s just to exit (09 F-4a) |
+| `COMMON_ARGS` | Fixed step `-deterministic -FPS=60 -novsync`, 1280×720 windowed, no sound, `-traceautostart=0`, `-SPExit`, capture on `BenchStart`/`BenchEnd` (01 §7) |
+| `CONFIGS` | Command-line switch per configuration; each one is added in the step that implements it (S1: `B0`) |
+| `environment_record()` | CPU, GPUs and drivers, RAM, OS build, power plan, engine version, and **`cpu_affinity: applied_mask()`**, the mask read back from Windows. AC power from `root/wmi BatteryStatus.PowerOnline`, which is true on mains whether the battery is charging or full (code review: `Win32_Battery.BatteryStatus == 2` means only \"AC, not charging\", so a charging laptop was reported as on battery) |
+| `analysis_windows(args)` | The window lengths of 01 §6.3 (W 4 s, D 2 s, GC 3 frames, PRE 1 s), **clipped to this batch's script timings**, so a shorter `--life` or `--gc-after` can't make one window swallow the next event (code review). They go into `csv_stats.analyse` and into the manifest |
+| `launch()` | Builds one command line with the `-SP…` settings and `--extra`; deletes `GameUserSettings.ini` (it can re-enable VSync or a frame cap); `subprocess.Popen`; `wait(timeout=…)`; **`finally`: `taskkill /F /T`** if the game is still running, then waits up to 30 s for it to end, so Windows releases its files before they are moved (code review) and a hung run never overlaps the next |
+| `collect()` / `collect_files()` | A file that still can't be moved is recorded as `collect_error` instead of stopping the whole batch (code review). Moves the newest CSV, the run report (`Saved\SPRuns\<name>.csv` → `<name>_report.csv`) and a copy of the log into `Benchmarks\Raw`, refusing to overwrite; counts `Error:` and `Warning:` in the log; runs `csv_stats.analyse` |
+| `is_failure()` | A run fails on a non-zero exit, a timeout, a missing or unfinalised capture, a missing log, log errors, a collect error, **a wave count different from `--waves`**, or **a wave that never completed** (code review). Failed runs are **excluded from the summary** and listed under it; their files stay in `Raw` |
+| `write_summary()` | Per configuration × work × window: frames per run, FrameTime median / p99 / max as median across runs [min–max], frames over 33.3 ms (sum and worst run), spawn-work **max** (a p99 over 240 frames hides the one frame that does a whole B0 wave); then the wave latency as the median across runs of each run's median (code review: it used to pool every wave of every run, unlike every other cell) |
+| `--work` default `20000` | The calibrated BeginPlay work (09 S2-c), passed as `-SPWork=` to every run, so all configurations use the same value whatever the cvar's code default is |
+| `main()` | `SetThreadExecutionState` keeps the display awake while the batch runs (changes no power settings); **`pin_self(performance_core_mask())` once, before the environment is recorded or anything is started**, refusing to measure if it fails; default `--runs` = the number of configurations and **at least 2** (a median and a range need two runs; code review); one priming run (`_r0_prime`, excluded from summaries); then each round rotates the configuration order |
