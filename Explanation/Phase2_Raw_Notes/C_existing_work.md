@@ -27,6 +27,8 @@ Plugin `Engine/Plugins/Runtime/MassGameplay` (`"IsExperimentalVersion": true` in
 
 ## C2. SpawnBudget (SimulatedFlow / Teufel Engineering), source-available, paid
 
+**Note:** SpawnBudget is a **paid** plugin whose source is publicly readable on GitHub. It is cited here by file and line **for comparison only**. None of its code is copied into this project, and it was not installed.
+
 Repository: https://github.com/SimulatedFlow/ue-plugin-SpawnBudget (default branch `autobackup`, created 2026-08-22, last push 2026-09-06; GitHub reports no licence file; the description says source-available under the Fab EULA). Read 2026-11-21 through GitHub's public API. The online manual (https://wiki.teufel-engineering.com/en/SpawnBudget/documentation) returned only a title, so the repository's `Docs/DOCUMENTATION.md` was read instead.
 
 | What it states or does | Evidence |

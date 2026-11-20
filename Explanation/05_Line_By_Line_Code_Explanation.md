@@ -22,7 +22,10 @@
 	"Category": "",
 	"Description": "P02 SpawnPacer: hitch-free content entry (UE 5.8.4 portfolio project).",
 	"Modules": [ { "Name": "SpawnPacer", "Type": "Runtime", "LoadingPhase": "Default" } ],
-	"Plugins": [ { "Name": "SpawnPacerCore", "Enabled": true } ]
+	"Plugins": [
+		{ "Name": "SpawnPacerCore", "Enabled": true },
+		{ "Name": "AndroidFileServer", "Enabled": false }
+	]
 }
 ```
 
@@ -36,6 +39,7 @@
 | `"Type": "Runtime"` | Built into both game and editor targets. *Alternative:* `Editor`, which would leave the code out of the packaged game we benchmark |
 | `"LoadingPhase": "Default"` | "Loaded at the default loading point during startup (during engine init, after game modules are loaded.)" (`Runtime/Projects/Public/ModuleDescriptor.h:46–47`). That is before the first map loads, so the module's classes (world subsystems from S1) exist when the world is created |
 | `"Plugins"` / `"SpawnPacerCore"` | Enables the project's own plugin explicitly. The plugin is `EnabledByDefault`, so it would load anyway; listing it keeps the dependency visible in one place and safe if that default changes |
+| `"AndroidFileServer"`, `"Enabled": false` | Switches off an engine plugin that is on by default (`Engine/Plugins/Runtime/AndroidFileServer/AndroidFileServer.uplugin:15`). Its editor module's settings object, on first load, replaces the placeholder `[AUTO]` with a new random GUID `SecurityToken` and writes it into the project's `DefaultEngine.ini` (`TryUpdateDefaultConfigFile`, `Engine/Plugins/Runtime/AndroidFileServer/Source/AndroidFileServerEditor/Private/AndroidFileServerRuntimeSettings.cpp:27–37`). That happened during the first Phase 4 cook. The token only matters for Epic's Android device file server, which this Windows-only project never uses, but a random credential-like value doesn't belong in a public repository, and a file the engine rewrites by itself would show up as noise in every diff. Disabling the plugin removes the writer, and the block was deleted (A7). The check that the cook no longer writes it is 09 F-5 |
 | *Not listed:* `ModelingToolsEditorMode` | The template enables it for editor modelling tools. This project builds everything from code, so the line is left out |
 
 ### A2. `Source\SpawnPacer.Target.cs` and `SpawnPacerEditor.Target.cs`: build targets
@@ -149,7 +153,7 @@ The build-log line `[Adaptive Build] Excluded from SpawnPacerCore unity file: Sp
 | `[/Script/Engine.Engine] bSmoothFrameRate=False, bUseFixedFrameRate=False` | Both are engine defaults. **Restated** so nobody can switch on smoothing or a frame cap later without it showing in a diff. Either one would make a spawn hitch look shorter than it was |
 | `[SystemSettings] r.VSync=0` | Also a default, restated: VSync makes Present wait for the monitor, which would quantise frame times |
 | `RendererSettings`, `WindowsTargetSettings` | Copied from Epic's 5.8 template: DX12, Shader Model 6, virtual shadow maps, no static lighting. Standard modern defaults, not benchmark choices |
-| **Engine-written block** `[/Script/AndroidFileServerEditor.AndroidFileServerRuntimeSettings]` | Not written by us. The engine's Android File Server editor plugin appended it, with a random `SecurityToken`, the first time the editor ran on this project (during the Phase 4 cook). It configures Epic's Android device file server and does nothing on Windows. Left as the engine wrote it (it would be re-added if removed); UE5-UpdateBudget saw the same |
+| *Removed:* an engine-written `[/Script/AndroidFileServerEditor.AndroidFileServerRuntimeSettings]` block | The Android File Server editor plugin appended it, with a random `SecurityToken`, the first time the editor ran on this project (the first Phase 4 cook). The plugin is now disabled in the `.uproject` (A1), so nothing writes it again; the block was deleted. The later cooks in 09 F-5 confirm it is not re-written |
 
 **`DefaultGame.ini`:** the project name and description. From S1 it will also list `/Engine/BasicShapes` under `DirectoriesToAlwaysCook`, because the demo meshes are referenced only from C++ and the cooker would otherwise leave them out.
 

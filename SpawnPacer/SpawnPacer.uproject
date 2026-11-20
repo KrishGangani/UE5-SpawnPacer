@@ -14,6 +14,10 @@
 		{
 			"Name": "SpawnPacerCore",
 			"Enabled": true
+		},
+		{
+			"Name": "AndroidFileServer",
+			"Enabled": false
 		}
 	]
 }
