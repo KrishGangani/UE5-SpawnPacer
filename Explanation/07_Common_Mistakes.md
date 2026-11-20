@@ -70,3 +70,14 @@
 | ⚠ caught: **a "Destroyed" counter that also counts parked or already-gone actors** | Stats disagree with what happened | One meaning per stat: `Added` / `Removed`, and only what the spawner really did | Destroy actors behind the spawner's back and read the stats |
 | **Building per-item setup inside a timed loop** (spawn parameters, array growth) | Baseline work includes bookkeeping the pattern doesn't need | Build parameters once in `Configure`; `Reserve` before the loop | Compare `WorkMs` with the engine's `ActorSpawning` column |
 | **A count cap tuned for one class mix** | B1's frames swing with the classes at the head of the queue | That is the measured weakness (H3), not a bug to fix in the baseline | `SPBaseline/WorkMs` distribution in B1 |
+
+## Policy and unit tests (step S4): mistakes the S4 code review and its fixes caught
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| ⚠ caught: **a rule implemented as a side effect of a number** ("cold = predicted as the whole budget, so it runs only first") | A cold job runs second after a first job that measured about 0 ms (0 + budget is not > budget) | State the rule as its own check (`bCold` in the admission test) and test the edge case (05 E3, `ColdJobRunsOnlyFirst`) | A fake first job of 0 ms, then a cold job |
+| ⚠ caught: **a raw `UClass*` as a long-lived map key** | After a Blueprint recompile in the editor, a new class predicts warm with an old class's cost | `TObjectKey<UClass>` (06 §20) | Recompile a Blueprint between PIE sessions and print the model's entries |
+| ⚠ caught: **believing a test runner's exit code 0 means the intended tests passed** | A new test is missing from a stale build and nobody notices | Parse each test's result line and require `--expect` distinct tests (05 E4) | Run with a filter that matches nothing: the script must fail |
+| ⚠ caught: **dereferencing a lookup result in a test without checking it** | One regression crashes the whole test run, with no failing test named | `if (!TestNotNull(...)) return false;` | The run log ends without `Test Completed` lines |
+| **Comparing floating-point sums at a boundary exactly** | A test that passes on one compiler and fails on another | A tolerance, or accept both sides of the boundary (04 §17) | Print the sum with 17 digits |
+| **Storing a `TFunctionRef`** | A crash or garbage after the call returned | Only as a parameter; `TFunction` or a delegate to keep one (06 §21) | Address sanitiser; check where the callable lived |

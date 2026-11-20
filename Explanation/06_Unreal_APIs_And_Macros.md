@@ -257,7 +257,7 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 5. **When not to.** Where an empty value is a programming error that should assert at once.
 6. **Common mistakes.** `GetValue()` on an empty optional (an assertion).
 7. **Example.** `if (const TOptional<ESPBaseline> Mode = ParseBaseline(Config)) { Configure(*Mode, ...); }`
-8. **In this project.** `ParseBaseline` (05 D3).
+8. **In this project.** `ParseBaseline` (05 D3); the scheduler's `while (const TOptional<FSpawnCostKey> Head = PeekHead())` (05 E2).
 
 ## 18. A `UPROPERTY` `TMap` with a struct value
 
@@ -269,3 +269,44 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 6. **Common mistakes.** A raw, non-`UPROPERTY` map of object pointers (GC can't see them); `TArray` as the value type (UHT refuses it).
 7. **Example.** `Pool.FindOrAdd(Class).Actors.Add(Actor);`
 8. **In this project.** B3's pool (05 D1); SpawnPacer's per-class pools from S7.
+
+## APIs added in step S4 (pure policy + unit tests)
+
+| # | API | First used in |
+|---|---|---|
+| 19 | Automation tests: `IMPLEMENT_SIMPLE_AUTOMATION_TEST`, `EAutomationTestFlags`, `WITH_DEV_AUTOMATION_TESTS`, `Automation RunTests` | S4 |
+| 20 | `TObjectKey` / `FObjectKey` | S4 |
+| 21 | `TFunctionRef` | S4 |
+
+## 19. Automation tests: `IMPLEMENT_SIMPLE_AUTOMATION_TEST`, `EAutomationTestFlags`, `WITH_DEV_AUTOMATION_TESTS`, `Automation RunTests`
+
+1. **What it is.** The engine's unit-test framework (`Core/Public/Misc/AutomationTest.h`). `IMPLEMENT_SIMPLE_AUTOMATION_TEST(FClass, "Path.Of.Test", Flags)` (4297) declares a test class and registers it; you write `bool FClass::RunTest(const FString& Parameters)`.
+2. **Why it exists.** Tests that run inside the engine, in the editor or a game, from the Session Frontend or the command line.
+3. **How it works.** Registration happens through a static object, so a test exists as soon as its module is loaded. `TestEqual(What, Actual, Expected, Tolerance)` (1989 for `double`), `TestTrue`, `TestNotNull` (2449) record an error and return false on failure; the test fails if any error was recorded. The flags need at least one context (`EditorContext`, `ClientContext`, …, `AutomationTest.h:88–95`) and **exactly one** filter (`ProductFilter`, `EngineFilter`, …, 131–133), checked by `static_assert` (4127–4133). `WITH_DEV_AUTOMATION_TESTS` is set by UBT per configuration (`UEBuildTarget.cs:6331`): on in Development, off in Shipping. From the command line, `-ExecCmds="Automation RunTests <prefix>;Quit"` runs every test whose path starts with the prefix; `Quit` waits for them, then exits with −1 if any report had errors, else 0 (`Developer/AutomationController/Private/AutomationCommandline.cpp:493–504`). Each result is logged as `Test Completed. Result={…} Name={…} Path={…}` (`AutomationControllerManager.cpp:43, 57`).
+4. **When to use it.** Pure logic (this step) and, with a world, functional checks (S5 onwards).
+5. **When not to.** Timing claims: a test proves behaviour, a benchmark proves cost.
+6. **Common mistakes.** Two filters in the flags (a compile error); test code outside `#if WITH_DEV_AUTOMATION_TESTS`; trusting exit code 0 without checking which tests ran; dereferencing a pointer the test should have checked with `TestNotNull` (a crash ends the whole run).
+7. **Example.** `IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMyTest, "SpawnPacer.Policy.Example", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter) bool FMyTest::RunTest(const FString&) { TestEqual(TEXT("sum"), 1 + 1, 2); return true; }`
+8. **In this project.** `SpawnPacerPolicyTests.cpp` (05 E3), run by `Tools\run_tests.py` (05 E4).
+
+## 20. `TObjectKey` / `FObjectKey`
+
+1. **What it is.** A key that identifies a `UObject` by its slot in the global object array and that slot's serial number (`CoreUObject/Public/UObject/ObjectKey.h:18, 221`), not by its address.
+2. **Why it exists.** A raw pointer can't tell an object from a new one that later got the same address; a `TObjectKey` can, because a reused slot gets a new serial number.
+3. **How it works.** Built implicitly from a pointer (it goes through `FWeakObjectPtr`); `==` and `GetTypeHash` compare index and serial; `ResolveObjectPtr()` returns the object or null if it is gone. It doesn't keep the object alive and is invisible to GC.
+4. **When to use it.** Map keys about objects you don't own: caches, statistics per class or per actor.
+5. **When not to.** When you need to keep the object alive (use a `UPROPERTY` `TObjectPtr`) or access it often (resolving costs a lookup).
+6. **Common mistakes.** Using a raw `UObject*` or `UClass*` as a long-lived map key: after the object is destroyed, a new one at the same address is taken for it.
+7. **Example.** `TMap<TObjectKey<UClass>, double> CostByClass; CostByClass.Add(Actor->GetClass(), 0.4);`
+8. **In this project.** `FSpawnCostKey::Class` (05 E1): a Blueprint class recompiled between PIE sessions mustn't inherit the old one's cost.
+
+## 21. `TFunctionRef`
+
+1. **What it is.** A non-owning reference to any callable with a given signature (`Core/Public/Templates/Function.h:556`), like C++26 `std::function_ref`.
+2. **Why it exists.** To accept "a function" without making the callee a template and without the allocation an owning `TFunction` may need.
+3. **How it works.** It stores a pointer to the callable and a pointer to a small function that calls it. It is valid only as long as the callable it was made from.
+4. **When to use it.** A parameter that is called during the call and not kept.
+5. **When not to.** Anything stored for later: delegates, members, async work (use `TFunction` or a delegate).
+6. **Common mistakes.** Storing it in a member or a container; making one from a temporary lambda and using it after the statement ends.
+7. **Example.** `static FSpawnPacerFrameStats RunFrame(double BudgetMs, FSpawnCostModel& Model, TFunctionRef<TOptional<FSpawnCostKey>()> PeekHead, TFunctionRef<double()> RunHead);`
+8. **In this project.** `FSpawnPacerScheduler::RunFrame` (05 E2): the policy calls the mechanism through two borrowed functions, so the tests can pass fake jobs.

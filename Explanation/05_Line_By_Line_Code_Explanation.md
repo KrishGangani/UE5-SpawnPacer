@@ -8,7 +8,8 @@
 | B | S1 (workload, B0 only) | `SPWaveActor`, `SPWaveBrainComponent`, `SPBaselineSpawner`, `SPBenchmarkSubsystem`, `DefaultGame.ini` |
 | C | S2 (measurement tools) | `Tools\csv_stats.py`, `Tools\run_bench.py` |
 | D | S3 (baselines B1–B3) | `SPBaselineSpawner` (rewritten), S3 additions to `SPWaveActor`, `SPWaveBrainComponent`, `SPBenchmarkSubsystem` |
-| E… | S4 onwards | added with each step |
+| E | S4 (pure policy + unit tests) | `SpawnCostModel`, `SpawnPacerScheduler`, `Tests\SpawnPacerPolicyTests.cpp`, `Tools\run_tests.py`, `run_and_reap` in `Tools\run_bench.py` |
+| F… | S5 onwards | added with each step |
 
 ---
 
@@ -376,7 +377,7 @@ Copied from UE5-UpdateBudget's `run_bench.py` and adapted. What changed, and why
 | `CONFIGS` | Command-line switch per configuration; each one is added in the step that implements it (S1: `B0`) |
 | `environment_record()` | CPU, GPUs and drivers, RAM, OS build, power plan, engine version, and **`cpu_affinity: applied_mask()`**, the mask read back from Windows. AC power from `root/wmi BatteryStatus.PowerOnline`, which is true on mains whether the battery is charging or full (code review: `Win32_Battery.BatteryStatus == 2` means only \"AC, not charging\", so a charging laptop was reported as on battery) |
 | `analysis_windows(args)` | The window lengths of 01 §6.3 (W 4 s, D 2 s, GC 3 frames, PRE 1 s), **clipped to this batch's script timings**, so a shorter `--life` or `--gc-after` can't make one window swallow the next event (code review). They go into `csv_stats.analyse` and into the manifest |
-| `launch()` | Builds one command line with the `-SP…` settings and `--extra`; deletes `GameUserSettings.ini` (it can re-enable VSync or a frame cap); `subprocess.Popen`; `wait(timeout=…)`; **`finally`: `taskkill /F /T`** if the game is still running, then waits up to 30 s for it to end, so Windows releases its files before they are moved (code review) and a hung run never overlaps the next |
+| `launch()` | Builds one command line with the `-SP…` settings and `--extra`; deletes `GameUserSettings.ini` (it can re-enable VSync or a frame cap); runs it with `run_and_reap` (05 E5) |
 | `collect()` / `collect_files()` | A file that still can't be moved is recorded as `collect_error` instead of stopping the whole batch (code review). Moves the newest CSV, the run report (`Saved\SPRuns\<name>.csv` → `<name>_report.csv`) and a copy of the log into `Benchmarks\Raw`, refusing to overwrite; counts `Error:` and `Warning:` in the log; runs `csv_stats.analyse` |
 | `is_failure()` | A run fails on a non-zero exit, a timeout, a missing or unfinalised capture, a missing log, log errors, a collect error, **a wave count different from `--waves`**, or **a wave that never completed** (code review). Failed runs are **excluded from the summary** and listed under it; their files stay in `Raw` |
 | `write_summary()` | Per configuration × work × window: frames per run, FrameTime median / p99 / max as median across runs [min–max], frames over 33.3 ms (sum and worst run), then the spawn frames (count per run, p99, max, count over 1.1 × budget; S3), with spawn-work **max** (a p99 over 240 frames hides the one frame that does a whole B0 wave); then the wave latency as the median across runs of each run's median (code review: it used to pool every wave of every run, unlike every other cell) |
@@ -430,3 +431,78 @@ Copied from UE5-UpdateBudget's `run_bench.py` and adapted. What changed, and why
 | `if (const TOptional<ESPBaseline> Mode = ParseBaseline(...)) { Baseline->Configure(*Mode, ...); }` | Configures the spawner only when there is a baseline: from S5, the SpawnPacer configurations have none, and `GetValue()` on an empty `TOptional` would assert (code review) |
 | `bPoolToFill` and the first warm-up frame | B3's pool is filled on the first warm-up frame, then that frame `break`s, so the capture can start on the next frame at the earliest: the fill's hitch never lands in it, whatever the warm-up length (code review). Filling earlier, in `OnWorldBeginPlay`, was tried and rejected: the world hasn't begun play yet, so the actors' BeginPlay would run *after* they were parked and restart their think timers |
 | `-SPSpawnTimer` | Brackets the capture with the engine's `spawnactortimer start` / `stop` (`GEngine->Exec`, which passes console commands on to `IConsoleManager::ProcessUserConsoleInput`, `Private/UnrealEngine.cpp:5519, 5722`). The stop logs `<class>,<average s>,<total s>,<count>` per class (`Private/GameFramework/SpawnActorTimer.cpp:110–117`): the engine's own per-class cost, a cross-check for H2 and for our per-stage timing from S5 |
+
+---
+
+## Part E · Step S4: the pure policy and its unit tests
+
+All in the plugin, `Plugins\SpawnPacerCore\Source\SpawnPacerCore\`. Plain C++: no `UObject`, no world, so the policy is tested with fake jobs (02 §4).
+
+### E1. `Public\SpawnCostModel.h` / `Private\SpawnCostModel.cpp`: what a stage will cost
+
+| Line | What it does, and why |
+|---|---|
+| `#include "UObject/ObjectKey.h"` | For `TObjectKey` (06 §20). `CoreMinimal.h` brings `TMap`, `FName`, `TOptional` and `TFunctionRef` |
+| `#define UE_API SPAWNPACERCORE_API` … `#undef UE_API` | The export macro under a short local name, the engine's own pattern; `#undef` at the end so it doesn't leak into files that include this one |
+| `enum class ESpawnPacerStage : uint8 { Spawn, Construct, Register, Finish, Acquire, Release, Destroy };` | The indivisible pieces of work of 02 §2, one comment each. `Spawn` is a whole spawn; `Construct` is `SpawnActor` with `bDeferConstruction`, which already registers the native components (06 §15); `Register` is one held-back component; `Finish` is `FinishSpawning` |
+| `struct FSpawnCostKey { TObjectKey<UClass> Class; ESpawnPacerStage Stage; FName Component; };` | What one estimate is kept for. The component's `FName` identifies "the same component" across spawns, because a default subobject has the same name in every instance. The class is a **weak** key: a raw `UClass*` could be reused by a new class at the same address after a Blueprint recompile, and inherit the old class's learned cost (S4 code review) |
+| `operator==` and `friend uint32 GetTypeHash(...)` | What `TMap` needs from a key (04 §15): equality over all three fields, and a hash combining all three with `HashCombine` |
+| `class UE_API FSpawnCostModel` | Exported, so the game module and the tests can use it |
+| `struct FEstimate { double MeanMs; double DeviationMs; int32 Samples; };` | RFC 6298's two numbers per key (SRTT and RTTVAR), plus a sample count, kept for the debug display and for seeding (02 §12) |
+| `static constexpr double Alpha = 1.0 / 8.0; Beta = 1.0 / 4.0;` | RFC 6298 §2: "SHOULD be computed using alpha=1/8 and beta=1/4" |
+| `explicit FSpawnCostModel(double InDeviationMultiplier = 2.0)` | K, 2 by default (02 §7). `explicit` so a `double` never silently becomes a model (04 §18) |
+| `double Predict(const FSpawnCostKey&, double ColdPredictionMs) const` | `Mean + K × Deviation`; for a cold key, the caller's cold value. The model doesn't know the budget, so the scheduler passes it |
+| `bool IsCold(const FSpawnCostKey&) const` | True if the key has never been observed or seeded |
+| `void Observe(const FSpawnCostKey&, double MeasuredMs)` | **First sample R:** `Mean = R`, `Deviation = R / 2` (RFC 6298 rule 2.2). **Later:** `Deviation = (1 − β)·Deviation + β·|Mean − R|` with the **old** mean, then `Mean = (1 − α)·Mean + α·R` (rule 2.3: the order matters, the test checks it) |
+| `void Seed(Key, MeanMs, DeviationMs)` | Sets an estimate directly: for tests now, for a saved table later (02 §12) |
+| `const FEstimate* Find(Key) const` | The estimate, or null when cold; for tests and the debug display |
+| `Get/SetDeviationMultiplier` | K, changeable at run time by the settings and cvars of S9 |
+
+### E2. `Public\SpawnPacerScheduler.h` / `Private\SpawnPacerScheduler.cpp`: the admission rule
+
+| Line | What it does, and why |
+|---|---|
+| `struct FSpawnPacerFrameStats` | One frame of the scheduler: `SpentMs` (measured), `PredictedMs` (what was predicted for the jobs that ran, before they ran), `Jobs`, `ForcedJobs`, `ColdJobs`, `bStoppedOnBudget`. Published once per frame as the `SpawnPacer` CSV stats from S5 (02 §4.1, telemetry) |
+| `static FSpawnPacerFrameStats RunFrame(double BudgetMs, FSpawnCostModel& Model, TFunctionRef<TOptional<FSpawnCostKey>()> PeekHead, TFunctionRef<double()> RunHead)` | The policy, with the mechanism passed in: `PeekHead` gives the head job's key (empty when the queue is empty), `RunHead` does one stage of the head request and returns the milliseconds it measured. Borrowed for the one call (`TFunctionRef`, 04 §16, 06 §21), so nothing is allocated per frame |
+| `while (const TOptional<FSpawnCostKey> Head = PeekHead())` | Tests and binds in one line (06 §17). The key is **copied** out of the queue, because `RunHead` may advance or reallocate it |
+| `bCold = Model.IsCold(*Head); Predicted = Model.Predict(*Head, BudgetMs);` | A cold key is predicted as the whole budget (02 §7) |
+| `if (Stats.Jobs > 0 && (bCold \|\| Stats.SpentMs + Predicted > BudgetMs)) { bStoppedOnBudget = true; break; }` | **Never start a job that is predicted not to fit**, and run a cold job only as the frame's first job. The cold check is explicit (S4 code review): with the prediction alone, after a first job that measured about 0 ms, `0 + budget > budget` is false and an unknown job would run second. The job stays at the head for the next frame |
+| `ForcedJobs += (Jobs == 0 && Predicted > BudgetMs)` | Progress: the first job always runs, so a job bigger than the budget can't block the queue forever. When it is predicted over the budget, that is counted: an overrun the policy knew about (SC3 counts forced frames separately) |
+| `Measured = RunHead(); Model.Observe(*Head, Measured);` | Run, then learn from what it really cost |
+| `SpentMs += Measured; PredictedMs += Predicted; ++Jobs;` | What the frame really spent. An overrun shows up in `SpentMs`; it is never clipped to the budget |
+
+### E3. `Private\Tests\SpawnPacerPolicyTests.cpp`: 8 automation tests with fake jobs
+
+| Line | What it does, and why |
+|---|---|
+| `#if WITH_DEV_AUTOMATION_TESTS` | Compiled only into builds that carry developer tests (not Shipping, 06 §19) |
+| `Flags = EditorContext \| ClientContext \| ProductFilter` | Runs in the editor and in a game; one filter, as the macro requires (`AutomationTest.h:4127–4133`); `ProductFilter` because these are a project's own tests, not engine tests |
+| `FSpawnCostKey Key(Stage, Component)` | A key with `UObject::StaticClass()`: the policy doesn't care which class |
+| `struct FFakeQueue { struct FJob { Key; CostMs; }; TArray<FJob> Jobs; int32 Next; }` | Fake jobs: each has a key and the time it "measures" when it runs. `RunFrame` passes two lambdas capturing `this` to the scheduler: peek = the job at `Next`, run = return its cost and advance. One array of jobs, not two parallel arrays (simplify) |
+| `EstimatorFollowsRfc6298` | Hand-worked: 4 ms gives mean 4, deviation 2, prediction 8; then 2 ms gives deviation 2 (computed with the **old** mean 4), mean 3.75, prediction 7.75; 2 samples. `TestNotNull` before reading the estimate, so a regression fails the test instead of crashing the run (code review) |
+| `ColdKeyIsPredictedAsTheBudget` | Cold → the cold value; warm after one sample; a different component name is a different key |
+| `NeverStartsAJobThatWontFit` | Five 0.6 ms jobs, 2 ms budget: three run (1.8 ms), the fourth would make 2.4 and stays at the head; nothing forced |
+| `FirstJobAlwaysRunsAndIsCountedForced` | A 5 ms job with a 2 ms budget runs alone and is counted forced; the second waits |
+| `ColdJobRunsOnlyFirst` | Warm then cold: only the warm one runs. Cold then warm: both run, the cold one isn't "forced" (its prediction equals the budget) and is now learned. **A warm job that measures 0 ms, then a cold one: the cold one waits** (the explicit rule; this case fails without it) |
+| `EmptyQueueDoesNothing` | No jobs, nothing spent, not "stopped on budget" |
+| `ManyTinyJobsStopAtTheBudget` | 1,000 jobs of 0.002 ms in 0.5 ms: 249 or 250 run (floating-point rounding at the boundary, 04 §17), never more than the budget, and the frame stops on the budget |
+| `OverrunIsReportedAndLearned` | Predicted 0.5, measures 1.5: `SpentMs` is 1.5 (an overrun is visible), `PredictedMs` 0.5, and the model learns (mean 0.625, prediction 1.125), so the next job (1.5 + 1.125 > 2) waits |
+
+### E4. `Tools\run_tests.py`: run the tests and believe only what ran
+
+| Line | What it does, and why |
+|---|---|
+| Docstring | Why a script: the runner **does** exit with −1 when a test reported an error (`AutomationCommandline.cpp:493–504`), but exit code 0 can't say *which* tests ran. A stale build without a new test, or a too-narrow filter, still exits 0 |
+| `--expect N` (required) | The fewest **distinct** tests that must report; required, so every caller states how many it means to run (code review) |
+| `os.remove(LOG)` in `try` | Never read a previous run's results; a log still locked by a running editor gives a clear `FAILED` line instead of a traceback (code review) |
+| `-ExecCmds="Automation RunTests <filter>;Quit" -unattended -nullrhi -nosplash -nosound -nopause -log -abslog=…` | The editor, headless, runs the tests whose path starts with the filter, then `Quit` (a forced exit, `AutomationCommandline.cpp:39, 726–734`) once they are done |
+| `run_and_reap(command, args.timeout)` | The shared launch–wait–kill (E5) |
+| `RESULT` regex over the log | One line per test, `Test Completed. Result={…} Name={…} Path={…}` (`AutomationControllerManager.cpp:43, 57`) |
+| `distinct = len({path ...})` | A test is counted once, even if its line appears twice |
+| `exit_code != 0 or failed or distinct < args.expect` → exit 1 | Fails on a timeout (`None`), a non-zero exit, any result that isn't `Success`, or too few tests. The queue sees the exit code |
+
+### E5. `Tools\run_bench.py`: `run_and_reap` (simplify)
+
+| Line | What it does, and why |
+|---|---|
+| `def run_and_reap(command, timeout) -> int \| None` | `subprocess.Popen(command)` (one string, so `-Key="…"` reaches Unreal as written); `wait(timeout)`; `None` on a timeout; **`finally`:** if it is still running, `taskkill /F /T` its tree and wait up to 30 s, so Windows releases its files and nothing runs into the next job. Used by `launch` and by `run_tests.py`, so both tools kill and wait the same way (it replaced two copies; the test runner's copy waited without a timeout) |

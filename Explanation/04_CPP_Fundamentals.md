@@ -156,3 +156,45 @@ auto Add = [this](TSubclassOf<ASPWaveActor> Class, int32 Number) { … Wave.AddD
 int32 GetAmmo() const { return Ammo; }   // promises not to change the object; callable on const objects
 ```
 - **In our code:** every getter (`GetBrain`, `GetHealth`, `GetNumLive`, `IsIdle`) and `WriteRunReport() const`.
+
+## Added in step S4
+
+## 15. A type as a map key: `operator==` and a hash function
+
+```cpp
+struct FKey { const void* A; uint8 B; bool operator==(const FKey& O) const { return A == O.A && B == O.B; }
+              friend uint32 GetTypeHash(const FKey& K) { return HashCombine(GetTypeHash(K.A), GetTypeHash(K.B)); } };
+TMap<FKey, double> Costs;   // needs both: the hash picks the bucket, == finds the entry in it
+```
+- A hash map puts each key in a bucket chosen by its hash, then compares keys inside the bucket with `==`. Two keys that are `==` **must** have the same hash, or lookups miss.
+- `friend` inside the struct defines a free function the compiler finds by the argument's type (argument-dependent lookup), which is how `TMap` finds `GetTypeHash`.
+- **In our code:** `FSpawnCostKey` (class, stage, component name): every field that `==` compares also goes into the hash.
+
+## 16. Passing a function: templates, owning wrappers and borrowed references
+
+```cpp
+void RunAll(TFunctionRef<double()> Job);    // borrows a callable for the duration of the call: no allocation
+RunAll([this]() { return Next++; });        // the lambda lives until the end of this statement: long enough
+```
+- A function can take "something callable" three ways: a template parameter (fastest, but the code lives in the header), an **owning** wrapper that copies the callable and may allocate (`TFunction`, like `std::function`), or a **borrowing** reference (`TFunctionRef`, like C++26 `std::function_ref`) that stores only a pointer to it.
+- A borrowed reference must not outlive what it points to: never store a `TFunctionRef` in a member.
+- **In our code:** `FSpawnPacerScheduler::RunFrame` borrows `PeekHead` and `RunHead` for one call, so the policy knows nothing about what a job is and the tests can pass fake jobs (06 §21).
+
+## 17. Comparing floating-point numbers
+
+```cpp
+0.1 + 0.2 == 0.3                       // false: neither side is exact in binary
+FMath::Abs(Actual - Expected) <= 1e-9  // "equal within a tolerance"
+```
+- Most decimal fractions have no exact binary form, so sums drift in the last bits. Tests compare with a tolerance; code that adds up many small values must expect the total at a boundary to land on either side of it.
+- **In our code:** the policy tests pass `Tolerance = 1e-9` to `TestEqual`; `ManyTinyJobsStopAtTheBudget` accepts 249 or 250 jobs of 0.002 ms in 0.5 ms, because whether 250 × 0.002 adds up to exactly 0.5 depends on rounding.
+
+## 18. `explicit` constructors and `static constexpr` members
+
+```cpp
+class FModel { public: static constexpr double Alpha = 1.0 / 8.0;   // one compile-time constant per class
+               explicit FModel(double K = 2.0); };                  // no silent conversion from double
+FModel M = 3.0;   // error with explicit; without it, a double would quietly become a model
+```
+- `explicit` stops a one-argument constructor from acting as an implicit conversion.
+- **In our code:** `FSpawnCostModel(double InDeviationMultiplier = 2.0)` is `explicit`; `Alpha` and `Beta` are `static constexpr`, with RFC 6298's wording next to them.

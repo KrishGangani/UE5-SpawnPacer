@@ -169,6 +169,46 @@ The pre-wave median is 3.1 ms in every configuration and the wave-window median 
 - Tools: `csv_stats.py` gained per-window statistics of the frames that did spawn work, with the count over 1.1 × budget (SC3), and `run_bench.py --resummarize` rebuilds a summary from raw data. The S2 calibration and S3 baseline summaries were rebuilt with it; their manifests are unchanged.
 - Shared-scratchpad rule (brief §2 rule 11): drafts now live in the git-ignored `_wip\`. My files in the shared scratchpad were checked by content and moved to `scratchpad\p02_spawnpacer\`. Every tracked and pending file was searched for other projects' identifiers: none.
 
+
+---
+
+## Step S4 · Pure policy and its unit tests (2026-11-21)
+
+Job `20261121_041329_4292c1`: build the editor and game Development targets, then `Tools\run_tests.py --filter SpawnPacer --expect 8` (the editor, headless, runs every test whose path starts with `SpawnPacer`; 05 E4). Nothing timed: S4 has no benchmark.
+
+| # | Check | Result |
+|---|---|---|
+| S4-a | **Build** | ✅ Editor and game Development targets `Result: Succeeded`, **0 errors, 0 warnings** |
+| S4-b | **8 policy tests, all passed** | ✅ `run_tests: 8 tests (expected at least 8), 0 not passed, editor exit code 0` |
+
+| Test (`SpawnPacer.Policy.…`) | What it proves (roadmap S4 check) |
+|---|---|
+| `EstimatorFollowsRfc6298` | The estimator matches a hand calculation, including the deviation updated with the **old** mean |
+| `ColdKeyIsPredictedAsTheBudget` | Cold key = the cold value (the budget); one sample warms it; another component is another key |
+| `NeverStartsAJobThatWontFit` | Never starts a job predicted not to fit (3 of 5 × 0.6 ms in 2 ms) |
+| `FirstJobAlwaysRunsAndIsCountedForced` | The first job always runs and is counted forced when predicted over the budget |
+| `ColdJobRunsOnlyFirst` | A cold job runs only as a frame's first job, **also after a first job that measured 0 ms** (the code-review case) |
+| `EmptyQueueDoesNothing` | An empty queue is fine |
+| `ManyTinyJobsStopAtTheBudget` | 1,000 tiny jobs stop at the budget, never above it |
+| `OverrunIsReportedAndLearned` | An overrun is reported as spent, never hidden, and the model learns from it |
+
+**Audit trail for S4:**
+- `code-review` (medium) on the diff: 6 findings, 1 important + 5 nits, **all fixed**:
+  - **important:** a cold job could run second after a first job that measured about 0 ms (`0 + budget > budget` is false). The rule is now an explicit check, with a test for that case (05 E2, E3; 02 §2, §6.3, §7 updated: the design said "cold = predicted as the budget" and relied on it);
+  - the docs were not yet written (they are now: 04 §15–18, 05 Part E, 06 §19–21, 07, this section);
+  - `--expect` had a default of 1, so a stale build could pass: it is now required, and tests are counted once each by path;
+  - the class in the cost key was a raw `UClass*`, which a Blueprint class recompiled at the same address could inherit: now `TObjectKey<UClass>` (06 §20);
+  - a log still locked by a running editor crashed the runner with a traceback: it now fails with a clear line;
+  - two tests read `Find()` without a null check: now `TestNotNull` first.
+- While checking the runner I found its draft docstring wrong: the engine's automation runner **does** exit with −1 when a test reports an error (`AutomationCommandline.cpp:493–504`). The script now checks the exit code too; it still parses the result lines, because exit code 0 can't say which tests ran.
+- `simplify`: run as a structured self-review on the four angles (the brief allows no sub-agents, so the skill's parallel reviewers were not started):
+  - **reuse:** `run_tests.py` repeated `run_bench.py`'s launch–wait–kill, without the wait timeout after a kill: both now call one `run_and_reap` (05 E5), checked on a normal exit (code 3) and a timeout (killed after 1.2 s);
+  - **simplification:** the fake queue's two parallel arrays became one array of jobs;
+  - **efficiency:** the scheduler looks a key up twice per job (`IsCold`, `Predict`): tens of nanoseconds against jobs of microseconds, and folding them would duplicate the prediction formula. **Skipped**;
+  - **altitude:** the explicit cold check *is* the design's rule, not a patch on it. No change.
+- Tests flags: `ProductFilter` (a project's tests) with Editor and Client contexts, as UE5-UpdateBudget's tests use.
+- Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
+
 ---
 
 ## Phases 5–8 (to be written)

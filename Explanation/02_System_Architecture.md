@@ -40,14 +40,14 @@ Each frame the scheduler looks at the job at the head of the queue and asks the 
 
 ```text
 predicted = mean(class, stage) + K × deviation(class, stage)     (K = 2)
-run it     if  spent + predicted ≤ budget
+run it     if  the key is warm and spent + predicted ≤ budget
            or  nothing has run yet this frame      (progress: counted as "forced" if predicted > budget)
 otherwise  stop for this frame                      (never start a job that won't fit)
 after it ran: spent += measured;  cost model learns from measured
 ```
 
 - **Prediction before, not a check after.** Mass and SpawnBudget check the clock *between* items, so the item that crosses the line runs to completion (01b §5). SpawnPacer asks first.
-- **The cost model is the RFC 6298 estimator** (the way TCP predicts round-trip times): a smoothed mean and a smoothed mean deviation per key, two numbers each, α = 1/8 and β = 1/4 ([raw notes B §B7](Phase2_Raw_Notes/B_measurement_and_pooling.md)). A key it has never seen is predicted as the **whole budget**, so its first sample runs alone in a frame and can't push a frame over.
+- **The cost model is the RFC 6298 estimator** (the way TCP predicts round-trip times): a smoothed mean and a smoothed mean deviation per key, two numbers each, α = 1/8 and β = 1/4 ([raw notes B §B7](Phase2_Raw_Notes/B_measurement_and_pooling.md)). A key it has never seen is predicted as the **whole budget** and runs only as a frame's first job, so its first sample can't be the job that pushes a frame over. (The S4 code review: "only first" is checked explicitly, not left to the prediction, because after a first job that measured about 0 ms, 0 + budget ≤ budget would let it run second.)
 - **Head of line.** A request keeps the head of its queue until its last stage is done. So a boss's components register on consecutive jobs, the actor stays half-spawned for as few frames as possible, and BeginPlay order equals request order (01b #8).
 - **The pool is a second path for the same requests,** not a different system: an acquire is one job with its own predicted cost, a release is another.
 
@@ -90,8 +90,8 @@ D:\UNREAL PORTFOLIO\P02_SpawnPacer\Tools\                            ← Python 
 | Class | Kind / base | Responsibility | Why it exists, and what we rejected |
 |---|---|---|---|
 | `USpawnPacerSubsystem` | `UTickableWorldSubsystem` (Game and PIE only) | The **mechanism and public API**: `RequestSpawn`, `RequestRelease`, `Prewarm`, batches; owns the queues, pools and cost model; runs one frame of jobs in `Tick`; executes each stage against the engine; publishes telemetry | Its lifetime is exactly the world's. Its `Tick` runs once per frame after `TG_PostPhysics` (`Private/LevelTick.cpp:1778–1821`), so new actors take part in the next frame's physics and ticks. *Rejected:* a manager actor (can be deleted, duplicated, or missing from a map); a custom `FTickFunction` in `TG_PrePhysics` (UE5-UpdateBudget needed one to match a tick group; spawn work has no group to match, so the simpler tickable is enough); a game-instance subsystem (outlives worlds, but pooled actors die with their world) |
-| `FSpawnPacerScheduler` | Plain C++ struct (no UObject) | The **policy**: given a budget and three callbacks (*peek head*, *predict*, *run head*), runs jobs by the rule in §2 and returns frame statistics | Unit-testable with fake jobs and fake costs, no world needed (S4). *Rejected:* the loop inside the subsystem, testable only in a running game |
-| `FSpawnCostModel` | Plain C++ struct | Per key **(class, stage, component name)**: mean and mean deviation; `Predict`, `Observe`, cold-start rule | Same reason: pure and testable. Keys use the component's `FName` because default subobjects have the same name in every instance of a class |
+| `FSpawnPacerScheduler` | Plain C++ struct (no UObject) | The **policy**: given a budget, the cost model and two callbacks (*peek head*: the head job's key; *run head*: do it and return the measured ms), runs jobs by the rule in §2 and returns frame statistics | Unit-testable with fake jobs and fake costs, no world needed (S4). *Rejected:* the loop inside the subsystem, testable only in a running game |
+| `FSpawnCostModel` | Plain C++ struct | Per key **(class, stage, component name)**: mean and mean deviation; `Predict`, `Observe`, cold-start rule | Same reason: pure and testable. Keys use the component's `FName` because default subobjects have the same name in every instance of a class, and a weak `TObjectKey<UClass>` for the class, so a Blueprint class recompiled or unloaded between PIE sessions can't hand its learned cost to a new class at the same address (S4 code review) |
 | `FSpawnPacerRequest` | Plain C++ struct (inside the subsystem's arrays) | One request's **state machine**: kind, class, transform, priority, batch, current stage, `TWeakObjectPtr` to its actor, the held-back components, an optional `Initialize` callback | Small and explicit; the stages in §2 are its states (§6.2). *Rejected:* one `UObject` per request (GC churn for 500 requests per wave) |
 | `FSpawnPacerPool` | USTRUCT, stored in a `UPROPERTY` map on the subsystem | Per class: parked actors plus, for each, which components were ticking; `Park` and `Unpark` implement the engine half of the reset contract (§11) | The `UPROPERTY` map keeps parked actors visible to GC. *Rejected:* a separate pool `UObject` (one more lifetime to manage, no gain) |
 | `ISpawnPacerPoolable` / `USpawnPacerPoolable` | `UINTERFACE` with two `BlueprintNativeEvent`s: `OnPoolReleased`, `OnPoolAcquired` | The **game half** of the reset contract: what the actor means (health, AI state). Blueprint actors can implement it too | An interface, because unrelated classes (an enemy, a projectile) share only this contract. Same shape as Mass's and SpawnBudget's interfaces, deliberately: users already know it |
@@ -222,7 +222,7 @@ stateDiagram-v2
 Spent = 0; Jobs = 0
 while Head = PeekHead():
     Predicted = Cost.Predict(Head.Key)              // cold key → Budget
-    if Jobs > 0 and Spent + Predicted > Budget: break
+    if Jobs > 0 and (Cold(Head) or Spent + Predicted > Budget): break
     Forced += (Jobs == 0 and Predicted > Budget)
     Measured = RunHead()                            // one engine stage, timed with FPlatformTime::Cycles64
     Cost.Observe(Head.Key, Measured)
@@ -245,7 +245,7 @@ Predict           = Mean + K·Dev                        // K = 2
 | `BudgetMs` | **2.0 ms** | About 12% of a 60 fps frame, leaving room for the 500 live actors' own cost (calibrated to ≤ 12 ms, 01 §6.1). The same share UE5-UpdateBudget chose for its budget. Swept at 1, 2, 4 ms |
 | `K` (deviation multiplier) | **2** | RFC 6298 uses K = 4 for a timeout, where being late is costly and waiting is cheap. Here an overestimate wastes budget (latency, SC4) and an underestimate overruns (SC3), so a smaller K is the balance. Checked against SC3/SC4 in Phase 8 |
 | α, β | **1/8, 1/4** | RFC 6298's recommended values: react within a few samples, don't jump on one outlier |
-| Cold key | **predict = whole budget** | Its first sample runs as the frame's only job, so it can't be the job that tips a full frame over |
+| Cold key | **predict = whole budget; run only as a frame's first job** | Its first sample runs as the frame's first job, so it can't be the job that tips a full frame over. The "first job" part is an explicit check (S4 code review), the prediction feeds the forced count and `PredictedMs` |
 | Split mode per class | **`Whole`** | The safest semantics (01b #7: split actors are visible but not ticking). Demo: Grunt `Deferred`, Boss `PerComponent`, chosen so the ablation shows what each seam buys |
 | Priorities | **3 FIFO levels**: Background (pre-warm), Normal, High | Enough to let pre-warming never delay gameplay requests; FIFO inside each level keeps request order |
 | Pool cap per class | **unlimited** (benchmark), settable | The benchmark needs exactly 500 parked actors; a game would cap it |

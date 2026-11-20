@@ -121,6 +121,24 @@ def analysis_windows(args) -> dict:
     }
 
 
+def run_and_reap(command: str, timeout: float) -> int | None:
+    """Runs one command line and waits for it; returns its exit code, or None on a timeout. Whatever happens (timeout,
+    Ctrl+C or any other error), a process still running is killed with its tree and waited for, so nothing runs into the
+    next job or holds its files. Shared with run_tests.py."""
+    process = subprocess.Popen(command)   # inherits this process's CPU affinity (run_bench main: pin_self)
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if process.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+            try:
+                process.wait(timeout=30)   # let Windows release the process's files before they are moved or read
+            except subprocess.TimeoutExpired:
+                pass
+
+
 def launch(name: str, config: str, work: int | None, args) -> tuple[str, int | None, float, float]:
     """Starts one run and waits for it. Returns (command, exit code or None on timeout, start time, wall seconds)."""
     sp_args = (f"-SPWaveSize={args.wave_size} -SPWaves={args.waves} -SPSeed={args.seed} -SPWarmup={args.warmup} "
@@ -137,18 +155,7 @@ def launch(name: str, config: str, work: int | None, args) -> tuple[str, int | N
     if os.path.exists(gus):
         os.remove(gus)
     started = time.time()
-    process = subprocess.Popen(command)   # inherits this process's CPU affinity (main: pin_self)
-    try:
-        exit_code = process.wait(timeout=run_seconds(args) + STARTUP_MARGIN_SECONDS)
-    except subprocess.TimeoutExpired:
-        exit_code = None
-    finally:
-        if process.poll() is None:   # timeout, Ctrl+C or any other error: never leave a game running into the next run
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
-            try:
-                process.wait(timeout=30)   # let Windows release the game's files before they are moved
-            except subprocess.TimeoutExpired:
-                pass
+    exit_code = run_and_reap(command, run_seconds(args) + STARTUP_MARGIN_SECONDS)
     return command, exit_code, started, time.time() - started
 
 
