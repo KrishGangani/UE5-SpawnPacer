@@ -55,6 +55,8 @@ DEFAULT_COLUMNS = (
     "SpawnPacer/RegisterMs",
     "SpawnPacer/FinishMs",
     "SpawnPacer/DestroyMs",
+    "SpawnPacer/AcquireMs",
+    "SpawnPacer/ReleaseMs",
     "Exclusive/GameThread/ActorSpawning",
     "Exclusive/GameThread/ActorDestroying",
 )

@@ -53,6 +53,9 @@ namespace SPBench
 
 	/** Frames to wait after BenchEnd before quitting, so the CSV profiler finishes writing its file. */
 	constexpr int32 ExitDelayFrames = 3;
+
+	/** SPP: how long the warm-up may be stretched for an unfinished pre-warm before the run fails. */
+	constexpr double MaxPrewarmWaitSeconds = 10.0;
 }
 
 /** Maps -SPBossSplit to a split mode by the enum's reflected names (Whole, Deferred, PerComponent; case-insensitive);
@@ -107,7 +110,7 @@ TOptional<ESPBaseline> USPBenchmarkSubsystem::ParseBaseline(const FString& Confi
 
 bool USPBenchmarkSubsystem::IsPacerConfig(const FString& Config)
 {
-	return Config == TEXT("SPS");
+	return Config == TEXT("SPS") || Config == TEXT("SPP");
 }
 
 bool USPBenchmarkSubsystem::ValidateRunSettings() const
@@ -115,7 +118,7 @@ bool USPBenchmarkSubsystem::ValidateRunSettings() const
 	bool bValid = true;
 	if (!ParseBaseline(Settings.Config).IsSet() && !IsPacerConfig(Settings.Config))
 	{
-		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3, SPS)."), *Settings.Config);
+		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3, SPS, SPP)."), *Settings.Config);
 		bValid = false;
 	}
 	if (!ParseSplitMode(Settings.BossSplit).IsSet())
@@ -186,6 +189,21 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		Pacer->SetClassRule(ASPGrunt::StaticClass(), ESpawnPacerSplitMode::Deferred);
 		Pacer->SetClassRule(ASPBoss::StaticClass(), ParseSplitMode(Settings.BossSplit).GetValue()); // validated above
 		Pacer->OnBatchComplete.AddUObject(this, &USPBenchmarkSubsystem::HandleBatchComplete);
+		if (Settings.Config == TEXT("SPP"))
+		{
+			// The pool path: every class pooled with room for its share of the wave, pre-warmed now at Background
+			// priority, so the warm-up (not the capture) pays for the spawns. Checked at BenchStart.
+			TMap<UClass*, int32> PerClass;
+			for (const FSPWaveEntry& Entry : Wave)
+			{
+				++PerClass.FindOrAdd(Entry.Class.Get());
+			}
+			for (const TPair<UClass*, int32>& Class : PerClass)
+			{
+				Pacer->SetClassPoolCap(Class.Key, Class.Value);
+				Pacer->Prewarm(Class.Key, Class.Value);
+			}
+		}
 	}
 	Camera = InWorld.SpawnActor<ACameraActor>(SPBench::CameraLocation, SPBench::CameraRotation);
 	BeginPlayTime = InWorld.GetTimeSeconds();
@@ -365,6 +383,21 @@ void USPBenchmarkSubsystem::Tick(float DeltaTime)
 		}
 		if (Now - BeginPlayTime >= Settings.WarmupSeconds)
 		{
+			if (Pacer && Pacer->GetNumPending() > 0)
+			{
+				// SPP: the pre-warm must be finished before the capture, or the first wave pays for it and pre-warmed
+				// actors' BeginPlay would count as wave actors becoming ready (S7 code review). So the warm-up waits for
+				// it; a pre-warm that doesn't finish in time fails the run.
+				if (Now - BeginPlayTime < Settings.WarmupSeconds + SPBench::MaxPrewarmWaitSeconds)
+				{
+					break;
+				}
+				UE_LOG(LogSPBench, Error, TEXT("Pre-warm not finished %.1f s after the warm-up: %d SpawnPacer requests pending"),
+					SPBench::MaxPrewarmWaitSeconds, Pacer->GetNumPending());
+				Phase = ERunPhase::Done;
+				QuitRun(SPBench::InvalidRunExitCode);
+				break;
+			}
 			BenchStartTime = Now;
 			Phase = ERunPhase::Capture;
 			CSV_EVENT(SPBench, TEXT("BenchStart"));

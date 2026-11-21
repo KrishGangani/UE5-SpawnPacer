@@ -11,7 +11,8 @@
 | E | S4 (pure policy + unit tests) | `SpawnCostModel`, `SpawnPacerScheduler`, `Tests\SpawnPacerPolicyTests.cpp`, `Tools\run_tests.py`, `run_and_reap` in `Tools\run_bench.py` |
 | F | S5 (subsystem + staged spawn) | `SpawnPacerSubsystem`, `Tests\SpawnPacerTestTypes`, `Tests\SpawnPacerTestFlags.h`, `Tests\SpawnPacerSubsystemTests.cpp`; SPS in `SPBenchmarkSubsystem`; `Tools\csv_stats.py` and `run_bench.py` additions |
 | G | S6 (per-component split) | `SpawnCostModel` (families), `SpawnPacerSubsystem` (PerComponent), `Tests\SpawnPacerTestTypes` (parts actor), the S6 tests; `-SPBossSplit` in `SPBenchmarkSubsystem`; the ablation configurations in `Tools\run_bench.py` |
-| H… | S7 onwards | added with each step |
+| H | S7 (pool + reset contract) | `SpawnPacerPoolable.h`; the pool in `SpawnPacerSubsystem`; `ASPWaveActor` as a poolable; SPP in `SPBenchmarkSubsystem`; the pool tests |
+| I | S8, partial (reset verifier) | `SpawnPacerResetVerifier.h` / `.cpp`; its hook in `SpawnPacerSubsystem`; the verifier test |
 
 ---
 
@@ -662,3 +663,94 @@ All in the plugin, `Plugins\SpawnPacerCore\Source\SpawnPacerCore\`. Plain C++: n
 | `SetClassRule(ASPBoss, …)` | The boss's mode from `-SPBossSplit`; grunts stay `Deferred` |
 | `run_bench.py` `CONFIGS` | `SPS` (boss PerComponent), `SPSBossDeferred`, `SPSBossWhole`, and the same three at 1 ms (`SPS1ms`, `SPSBossDeferred1ms`, `SPSBossWhole1ms`). **`SPS` changed meaning in S6:** the S5 batch ran the boss `Deferred`, which is now `SPSBossDeferred` |
 | `csv_stats.py` `DEFAULT_COLUMNS` | Adds `SpawnPacer/RegisterMs` |
+
+---
+
+## Part H · Step S7: the pool and the reset contract
+
+### H1. `Public\SpawnPacerPoolable.h`: the game's half of the contract
+
+| Line | What it does, and why |
+|---|---|
+| `UINTERFACE(MinimalAPI, Blueprintable) class USpawnPacerPoolable : public UInterface` | The reflected half of an interface (06 §30); `Blueprintable` so Blueprint actors can implement it |
+| `class SPAWNPACERCORE_API ISpawnPacerPoolable` | The C++ half. Exported, because the demo's actors in another module inherit it |
+| `UFUNCTION(BlueprintNativeEvent) void OnPoolReleased();` | Put gameplay state back to fresh. Called **first** on release, so the actor can still read its components |
+| `UFUNCTION(BlueprintNativeEvent) void OnPoolAcquired();` | Start a new life, already at the new transform and visible. For a pooled class BeginPlay is once-per-object setup (02 §8) |
+
+### H2. The pool in `SpawnPacerSubsystem.h` / `.cpp`
+
+| Line | What it does, and why |
+|---|---|
+| `ESpawnPacerRequestKind::Prewarm` | A spawn for the pool: parked as soon as it has spawned, never handed out |
+| `FSpawnPacerRequest::FirstStage` | `Spawn` or `Construct`: where a fresh spawn starts, to go back to if the pool it was going to use is empty by the time its job comes |
+| `USTRUCT FSpawnPacerParkedActor { TObjectPtr<AActor> Actor; TObjectKey<AActor> Key; TickingComponents; bActorTickWasEnabled; uint64 ParkedFrame; }` | One parked actor: the ticks `Park` switched off (so `Unpark` switches exactly those back on), its key (to remove its `ParkedActors` entry even after GC cleared the pointer) and the frame it was parked in |
+| `USTRUCT FSpawnPacerPool { TArray<FSpawnPacerParkedActor> Parked; }` and `UPROPERTY TMap<TObjectPtr<UClass>, FSpawnPacerPool> Pools` | Per class; `UPROPERTY`, so GC sees the parked actors (06 §18); emptied in `Deinitialize` (the world destroys the actors) |
+| `PoolCaps` (`TMap<TObjectKey<UClass>, int32>`), `ParkedActors` (`TSet<TObjectKey<AActor>>`) | The caps (absent = not pooled) and every parked actor, so a second release of one is refused at once |
+| `SetClassPoolCap(Class, Cap)` | Pools this exact class (the director calls it until S9's settings) |
+| `Prewarm(Class, Count, Priority = Background, BatchId)` | Clamped to the room left after the parked actors **and the pre-warms already queued**, never negative (code review); each is a normal spawn request (the class's split mode) at the park location, `AlwaysSpawn`, marked `Prewarm` |
+| `GetNumParked(Class)` | Valid parked actors only; for tests and the director |
+| `RequestRelease` | Refuses an actor that is gone **or already parked**; the first stage is `Release` for a pooled class, else `Destroy` |
+| `IsHalfSpawned` | Now any spawn-like kind (`Spawn` or `Prewarm`) waiting for `Register` or `Finish` |
+| `ResolveCancel(Request)` | The cancel rules in one place: half-spawned → a Destroy job; already cleaning up → its job; a pre-warmed actor waiting to be parked → parked as planned (left live it would be a leak); anything else → ends with no job |
+| `ResolvePool(Request)` → `bool` | Decided at the head, just before the job, because the pool changes over time. A fresh `Spawn` request of a class with an acquirable actor → `Acquire`; back to `FirstStage` if there is none any more. A `Release` of an actor **already parked** (released twice before the first ran) ends with no job: parking it again would hand it out twice (code review). A `Release` (or a pre-warm's park) with no room left → `Destroy` |
+| `SweepPool(Class)` | Drops every entry whose actor is gone, anywhere in the pool, with its `ParkedActors` key (code review: only the end was cleaned before) |
+| `FindAcquirable(Class)` | From the most recent: the first entry **not parked this frame** (latent removal waits for the next latent update, 06 §31). Usually the last one, so O(1); a dead entry triggers one sweep |
+| `PoolHasRoom(Class)` | Sweeps only when the pool looks full, the only time dead entries change the answer: the common case stays O(1) inside the measured work |
+| `Finished` lambda | A pre-warm request, once spawned, stores its actor and moves to `Release`: its park is a budgeted job of its own (key `(class, Release)`) |
+| `Acquire` job | Takes the acquirable entry, `Unpark`, then the request's `Initialize`; if `Initialize` cancelled the request's batch, the actor is **parked again** and the request ends cancelled (as the spawn path destroys it); else `OnSpawned`. An acquire places the actor as a teleport: the request's collision handling applies to fresh spawns only |
+| `Release` job | Actor gone → `Dropped`; otherwise `Park` |
+| `Destroy` outcome | `Cancelled` if the request was cancelled, else `Completed`, or `Dropped` if its actor was already gone. A pre-warm with no room in its pool ends here as completed |
+| `Park(Actor)` | **Step 1:** `OnPoolReleased` if the class implements the interface (06 §30). **Steps 2–3:** `ClearAllTimersForObject` and `RemoveActionsForObject` for the actor **and every component**, unconditionally (06 §31; the engine clears none, 01b #11; latent removal takes effect at the next latent update); the actor's tick and every ticking component's tick remembered and switched off (`SetActorTickEnabled` touches only the actor, 01b #12). **Step 4:** collision and visibility off; moved to the park location with `ResetPhysics`; the frame recorded |
+| `Unpark(Parked, Transform)` | **Steps 1–3:** `SetActorTransform(…, ResetPhysics)`; collision and visibility **as the class default object has them**, i.e. as a fresh actor (code review: not as they were at release, when a dying enemy may have hidden itself); the remembered ticks back; **step 4:** `OnPoolAcquired`. The verifier (S8) comes between these and `Initialize` |
+| Telemetry | `AcquireMs`, `ReleaseMs`, `Parked` |
+
+### H3. `ASPWaveActor` as a poolable, and SPP
+
+| Line | What it does, and why |
+|---|---|
+| `class ASPWaveActor : public AActor, public ISpawnPacerPoolable` | 02 §4.2 |
+| `OnPoolReleased_Implementation() { PrepareForParking(); }` | The same callback the B3 pool calls itself (stops the think timer) |
+| `OnPoolAcquired_Implementation() { PrepareForReuse(); NotifyReady(); }` | Restarts thinking (and a drone's circle at its new place); the acquire is a reused actor's "ready", because it doesn't run BeginPlay again |
+| Director, `-SPConfig=SPP` | As SPS, plus: every class pooled with room for its share of the wave (`SetClassPoolCap`) and pre-warmed in `OnWorldBeginPlay` at Background priority, so the warm-up pays for the spawns. **The warm-up waits for the pre-warm** (up to `MaxPrewarmWaitSeconds` = 10 s more), because a pre-warmed actor's BeginPlay during wave 1 would count as a wave actor becoming ready (code review); a pre-warm still unfinished then logs an error and the run exits with code 2 |
+| `run_bench.py` `CONFIGS["SPP"]` | `-SPConfig=SPP -SPBudgetMs=2.0` |
+| `csv_stats.py` | Adds `SpawnPacer/AcquireMs`, `ReleaseMs` |
+
+### H4. The pool tests (`SpawnPacerSubsystemTests.cpp`, S7)
+
+| Line | What it does, and why |
+|---|---|
+| `USpawnPacerTestTickComponent`, `ASpawnPacerTestPoolActor` | A ticking component that counts ticks and timer firings; a ticking poolable actor that counts its ticks and pool callbacks and can arm one timer on itself and one on the component |
+| `FCountingLatentAction` | A latent action that never finishes and counts its updates (`FPendingLatentAction`, 06 §31) |
+| `SpawnPooled`, `ReleaseAll` | Spawn N and drain; release all and drain |
+| `ReleaseParksAndAcquireReuses` | Cap 3. After release: 3 parked, each still alive, `OnPoolReleased` once, hidden, no collision, actor and component ticks off; a second release of a parked actor refused. After 3 new requests: the **same** actors, `OnPoolAcquired` once, **no second BeginPlay**, visible, colliding, ticking, at the new transforms |
+| `ParkedActorCostsNoTick` (03 S7) | The actor's and the component's tick counts don't move in 10 parked frames, and move again after reuse |
+| `TimerFromUseNeverFiresAfterReuse` (03 S7) | Timers armed for 0.2 s on the actor and its component, and a latent action, during use; parked at once and reused; 0.5 s later neither timer has fired, and the latent action is gone and never ran again |
+| `FullPoolDestroysTheRest` | Cap 2, 3 released: 2 parked, the third destroyed |
+| `PrewarmFillsThePool` | `Prewarm(…, 10)` with cap 4 queues 4; they run BeginPlay once and are parked; the next 4 requests are served from the pool (acquired once, no second BeginPlay) |
+| `EdgeCasesFromCodeReview` | An actor that hid itself and dropped its collision, then was released **twice**: parked once (`OnPoolReleased` once); reused visible and colliding, as a fresh actor. Then, with every key warm and a 100 ms budget, a release and a spawn request in one frame: both run, and the spawn is **not** the actor parked in that frame, which stays parked |
+
+---
+
+## Part I · Step S8 (partial): the reset verifier
+
+### I1. `Public\SpawnPacerResetVerifier.h` / `Private\SpawnPacerResetVerifier.cpp`
+
+| Line | What it does, and why |
+|---|---|
+| `enum class ESpawnPacerLeakKind { ActorProperty, ComponentProperty, ComponentSet, Attachment, Delegate, Tick, LatentAction }` | SC5's six seeded kinds, plus latent actions (the pool clears them, so one would be a pool bug) |
+| `struct FSpawnPacerLeak { Kind; Where; Fresh; Now; }` | One difference, readable in a log |
+| `struct FSpawnPacerSnapshot` | `Properties` ("Actor.Name" or "Component.Name" → exported text), `DelegateProperties`, `Components` (name → class), `TickEnabled`, `AttachedActors`, `LatentActions` |
+| `IgnoredByDefault()` | `RelativeLocation`, `RelativeRotation`, `ComponentVelocity`: every reuse moves the actor (02 §11) |
+| `Capture(Actor, ExtraIgnored)` | For the actor and each component: every `UPROPERTY` through `TFieldIterator<FProperty>` and `ExportTextItem_InContainer` (06 §33), except the ignored names; delegate properties remembered; then the structure. A class's per-spawn parameters are passed as `ExtraIgnored` |
+| `Compare(Fresh, Now, OutLeaks)` | Structure first (an added or removed component is one leak; attachments; latent actions; tick states), then every property both snapshots have: a delegate → `Delegate`, an `Actor.` key → `ActorProperty`, else `ComponentProperty` |
+
+### I2. The hook in `SpawnPacerSubsystem`
+
+| Line | What it does, and why |
+|---|---|
+| `SetVerifyReset(bool)`, `SetClassVerifierIgnore(Class, Names)` | Off by default: it exports every property as text, which suits a soak and is too slow for timing runs |
+| `Finished` lambda | With verification on, a pooled actor is snapshot once, the first time it finishes spawning, before `OnSpawned` hands it to anyone: "fresh" |
+| `Acquire` job | After `Unpark` and before `Initialize` (step 5 of 02 §11): capture, compare, count per kind (`GetResetLeaks`), broadcast `OnResetVerified(Actor, Leaks)`; the `ResetLeaks` CSV stat per frame |
+| Test `VerifierFindsAPropertyLeftChanged` | The pool test actor's reflected `Uses`: a correct reset gives 0 leaks; a skipped one gives exactly 1 `ActorProperty` leak. It also shows that the test actor's engine properties (root, ticking component) don't differ after park and unpark |
+
+**Not built (S8's rest):** `ASPLeakyGrunt` and the director's soak mode (`-SPSoak`, `-SPSeedLeak`), and `Tools\run_soak.py`. Drafted, never compiled or run.

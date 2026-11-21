@@ -6,6 +6,7 @@
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/EngineTypes.h"
 #include "SpawnCostModel.h"
+#include "SpawnPacerResetVerifier.h"
 #include "SpawnPacerScheduler.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Templates/SubclassOf.h"
@@ -69,8 +70,9 @@ struct FSpawnPacerTotals
 
 enum class ESpawnPacerRequestKind : uint8
 {
-	Spawn,
-	Release
+	Spawn,    // handed to the caller when spawned (or acquired from the pool)
+	Release,  // parked (pooled class with room) or destroyed
+	Prewarm   // spawned for the pool: parked as soon as it has spawned (S7)
 };
 
 /** What one request is waiting for. Internal; USTRUCT so the class pointer is visible to GC while the request waits. */
@@ -96,6 +98,9 @@ struct FSpawnPacerRequest
 	int32 BatchId = INDEX_NONE;
 	ESpawnPacerRequestKind Kind = ESpawnPacerRequestKind::Spawn;
 	ESpawnPacerStage NextStage = ESpawnPacerStage::Spawn;
+
+	/** The stage a fresh spawn starts with (Spawn or Construct), to go back to if the pool it was going to use is empty. */
+	ESpawnPacerStage FirstStage = ESpawnPacerStage::Spawn;
 	ESpawnPacerPriority Priority = ESpawnPacerPriority::Normal;
 	ESpawnActorCollisionHandlingMethod CollisionHandling = ESpawnActorCollisionHandlingMethod::Undefined;
 
@@ -120,7 +125,42 @@ struct FSpawnPacerQueue
 	int32 Num() const { return Requests.Num() - Head; }
 };
 
+/** One parked actor and the ticks Park switched off, so Unpark can switch exactly those back on (02 section 11). */
+USTRUCT()
+struct FSpawnPacerParkedActor
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<AActor> Actor;
+
+	/** The actor's key, kept so its ParkedActors entry can be removed even after GC has cleared the pointer. */
+	TObjectKey<AActor> Key;
+
+	/** Components whose tick was on when the actor was parked. */
+	TArray<TWeakObjectPtr<UActorComponent>> TickingComponents;
+
+	bool bActorTickWasEnabled = false;
+
+	/** GFrameCounter when parked: not acquired in that frame (its latent actions are removed only at the next latent
+	 *  update, LatentActionManager.cpp:52-75, and a new Delay with the same id would find the stale one). */
+	uint64 ParkedFrame = 0;
+};
+
+/** One class's parked actors. In a UPROPERTY map on the subsystem, so GC sees them (02 section 4.1). */
+USTRUCT()
+struct FSpawnPacerPool
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FSpawnPacerParkedActor> Parked;
+};
+
 DECLARE_MULTICAST_DELEGATE_OneParam(FSpawnPacerBatchCompleteDelegate, int32 /*BatchId*/);
+
+/** After each verified acquire (S8): the actor and what the verifier found (empty: clean). */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FSpawnPacerResetVerifiedDelegate, AActor& /*Actor*/, const TArray<FSpawnPacerLeak>& /*Leaks*/);
 
 /**
  * The mechanism and public API (02 section 4.1). Requests are cut into indivisible jobs; once per frame the scheduler
@@ -175,6 +215,42 @@ public:
 	/** How this class's spawns are cut into jobs, from its next request on (the settings of S9 feed this). */
 	UE_API void SetClassRule(TSubclassOf<AActor> Class, ESpawnPacerSplitMode Mode);
 
+	/**
+	 * Pools this exact class with up to Cap parked actors (0 = not pooled, the default). Releases of a pooled class are
+	 * parked while there is room and destroyed beyond it; its spawn requests are served from the pool when it has an
+	 * actor (an Acquire job), else spawned. An actor class that implements ISpawnPacerPoolable resets its own state.
+	 * An acquired actor is placed at the request's transform as a teleport: the request's collision handling applies to
+	 * fresh spawns only.
+	 */
+	UE_API void SetClassPoolCap(TSubclassOf<AActor> Class, int32 Cap);
+
+	/**
+	 * Queues up to Count spawns of a pooled class that are parked as soon as they have spawned, never handed out
+	 * (Background priority by default, so they never delay a gameplay request). Clamped to the room left in the pool
+	 * after the parked actors and the pre-warms already queued. Returns how many were queued (0 or more).
+	 */
+	UE_API int32 Prewarm(TSubclassOf<AActor> Class, int32 Count, ESpawnPacerPriority Priority = ESpawnPacerPriority::Background, int32 BatchId = INDEX_NONE);
+
+	/** Parked actors of this exact class. */
+	UE_API int32 GetNumParked(TSubclassOf<AActor> Class) const;
+
+	/**
+	 * S8, the reset verifier (02 section 11): when on, every actor of a pooled class is snapshot once, right after it
+	 * first finished spawning, and compared with that snapshot after every acquire (before Initialize). Off by default:
+	 * it exports every property as text, fine for a soak, too slow for timing runs (sp.Pool.VerifyReset in S9).
+	 */
+	void SetVerifyReset(bool bVerify) { bVerifyReset = bVerify; }
+	bool IsVerifyingReset() const { return bVerifyReset; }
+
+	/** Property names of this class the verifier ignores: its per-spawn parameters (02 section 11). */
+	UE_API void SetClassVerifierIgnore(TSubclassOf<AActor> Class, const TSet<FName>& PropertyNames);
+
+	/** Broadcast after every verified acquire. */
+	FSpawnPacerResetVerifiedDelegate OnResetVerified;
+
+	/** Leaks found since the world began, by kind (ESpawnPacerLeakKind). */
+	int32 GetResetLeaks(ESpawnPacerLeakKind Kind) const { return ResetLeaks[static_cast<int32>(Kind)]; }
+
 	/** The per-frame budget in ms (default 2.0, 02 section 7). 0 means one job per frame. */
 	void SetBudgetMs(double InBudgetMs) { BudgetMs = FMath::Max(InBudgetMs, 0.0); }
 	double GetBudgetMs() const { return BudgetMs; }
@@ -220,6 +296,26 @@ private:
 	/** Moves NextHeldBack past components that are gone or already registered; with none left, the next job is Finish. */
 	static void SkipToNextHeldBack(FSpawnPacerRequest& Request);
 
+	/** A cancelled request at the head: true if it ended without a job, false if it still has a job to do. */
+	bool ResolveCancel(FSpawnPacerRequest& Request);
+
+	/** The pool decisions for a head request (S7): Acquire instead of a fresh spawn, Destroy instead of a park into a
+	 *  full pool. Returns true if the request ended without a job (a second release of an actor already parked). */
+	bool ResolvePool(FSpawnPacerRequest& Request);
+
+	/** Drops the pool's entries whose actor is gone (destroyed behind the pool's back), with their ParkedActors keys. */
+	void SweepPool(UClass* Class);
+
+	/** The index of the most recently parked actor of the class that may be acquired now (valid, not parked this frame),
+	 *  or INDEX_NONE. */
+	int32 FindAcquirable(UClass* Class);
+
+	bool PoolHasRoom(UClass* Class);
+
+	/** The engine half of the reset contract, steps 1-4 on release and on acquire (02 section 11). */
+	void Park(AActor& Actor);
+	void Unpark(FSpawnPacerParkedActor& Parked, const FTransform& Transform);
+
 	/** Ends a request: counts its outcome and its batch. */
 	void End(const FSpawnPacerRequest& Request, EOutcome Outcome);
 
@@ -241,6 +337,23 @@ private:
 	int32 NextBatchId = 0;
 
 	TMap<TObjectKey<UClass>, ESpawnPacerSplitMode> ClassRules;
+
+	/** Parked actors per class; emptied in Deinitialize (the world destroys the actors). */
+	UPROPERTY(Transient)
+	TMap<TObjectPtr<UClass>, FSpawnPacerPool> Pools;
+
+	/** Pool caps per class (absent = not pooled). */
+	TMap<TObjectKey<UClass>, int32> PoolCaps;
+
+	/** Every parked actor, so a second release of one is refused at once. */
+	TSet<TObjectKey<AActor>> ParkedActors;
+
+	/** S8: each pooled actor's fresh snapshot, and the classes' ignored property names. */
+	TMap<TObjectKey<AActor>, FSpawnPacerSnapshot> FreshSnapshots;
+	TMap<TObjectKey<UClass>, TSet<FName>> VerifierIgnore;
+	int32 ResetLeaks[static_cast<int32>(ESpawnPacerLeakKind::Num)] = {};
+	int32 FrameResetLeaks = 0;
+	bool bVerifyReset = false;
 
 	FSpawnCostModel CostModel;
 	double BudgetMs = 2.0;

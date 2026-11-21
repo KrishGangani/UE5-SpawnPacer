@@ -4,8 +4,11 @@
 
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Engine/LatentActionManager.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "SpawnPacerPoolable.h"
+#include "TimerManager.h"
 #include "HAL/PlatformTime.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
@@ -22,6 +25,9 @@ namespace SpawnPacer
 
 	/** A queue is compacted when at least this many ended requests sit before its head and they are most of it. */
 	constexpr int32 CompactAfter = 64;
+
+	/** Where parked and pre-warming actors wait: 1 km below the origin, out of sight and out of the way. */
+	const FVector ParkLocation(0.0, 0.0, -100000.0);
 
 	/**
 	 * PerComponent, called from CustomPreSpawnInitialization: after NewObject, before PostSpawnInitialize registers
@@ -85,8 +91,103 @@ void USpawnPacerSubsystem::SkipToNextHeldBack(FSpawnPacerRequest& Request)
 
 bool USpawnPacerSubsystem::IsHalfSpawned(const FSpawnPacerRequest& Request)
 {
-	return Request.Kind == ESpawnPacerRequestKind::Spawn
+	return Request.Kind != ESpawnPacerRequestKind::Release
 		&& (Request.NextStage == ESpawnPacerStage::Register || Request.NextStage == ESpawnPacerStage::Finish);
+}
+
+bool USpawnPacerSubsystem::ResolveCancel(FSpawnPacerRequest& Request)
+{
+	if (IsHalfSpawned(Request))
+	{
+		Request.NextStage = ESpawnPacerStage::Destroy; // half-spawned: cleaned up by a budgeted Destroy job
+		return false;
+	}
+	const bool bSpawned = Request.Kind != ESpawnPacerRequestKind::Release;
+	if (bSpawned && Request.NextStage == ESpawnPacerStage::Destroy)
+	{
+		return false; // already cleaning up
+	}
+	if (Request.Kind == ESpawnPacerRequestKind::Prewarm && Request.NextStage == ESpawnPacerStage::Release)
+	{
+		return false; // spawned for the pool: parked as planned rather than left live
+	}
+	End(Request, EOutcome::Cancelled); // not started, or a release: no job, no cost
+	return true;
+}
+
+void USpawnPacerSubsystem::SweepPool(UClass* Class)
+{
+	// Anywhere in the pool, not only at its end: a parked actor destroyed behind the pool's back (a level unload,
+	// gameplay) must not keep its slot or its ParkedActors key (S7 code review; Mass skips such actors too, 02 section 8).
+	if (FSpawnPacerPool* Pool = Pools.Find(Class))
+	{
+		Pool->Parked.RemoveAll([this](const FSpawnPacerParkedActor& Parked)
+		{
+			if (IsValid(Parked.Actor))
+			{
+				return false;
+			}
+			ParkedActors.Remove(Parked.Key);
+			return true;
+		});
+	}
+}
+
+int32 USpawnPacerSubsystem::FindAcquirable(UClass* Class)
+{
+	const FSpawnPacerPool* Pool = Pools.Find(Class);
+	for (int32 Index = Pool ? Pool->Parked.Num() - 1 : -1; Index >= 0; --Index)
+	{
+		const FSpawnPacerParkedActor& Parked = Pool->Parked[Index];
+		if (!IsValid(Parked.Actor))
+		{
+			SweepPool(Class); // rare: one full sweep, then the search again over valid entries only
+			return FindAcquirable(Class);
+		}
+		if (Parked.ParkedFrame != GFrameCounter)
+		{
+			return Index; // the most recent one not parked this frame: usually the last, an O(1) check
+		}
+	}
+	return INDEX_NONE;
+}
+
+bool USpawnPacerSubsystem::PoolHasRoom(UClass* Class)
+{
+	const int32 Cap = PoolCaps.FindRef(Class);
+	const FSpawnPacerPool* Pool = Pools.Find(Class);
+	if (Pool && Pool->Parked.Num() >= Cap)
+	{
+		SweepPool(Class); // only when it looks full: that is when dead entries could be holding the slots
+	}
+	return (Pool ? Pool->Parked.Num() : 0) < Cap;
+}
+
+bool USpawnPacerSubsystem::ResolvePool(FSpawnPacerRequest& Request)
+{
+	UClass* Class = Request.Class.Get();
+	if (Request.Kind == ESpawnPacerRequestKind::Spawn)
+	{
+		const bool bFresh = Request.NextStage == Request.FirstStage || Request.NextStage == ESpawnPacerStage::Acquire;
+		if (bFresh)
+		{
+			// Decided at the head, just before its job, because the pool changes over time.
+			Request.NextStage = FindAcquirable(Class) != INDEX_NONE ? ESpawnPacerStage::Acquire : Request.FirstStage;
+		}
+		return false;
+	}
+	if (Request.Kind == ESpawnPacerRequestKind::Release && ParkedActors.Contains(Request.Actor.Get()))
+	{
+		// Released twice before the first release ran: it is already parked, so this one has nothing left to do
+		// (parking it again would hand it out twice; destroying it would destroy a pooled actor) (S7 code review).
+		End(Request, EOutcome::Completed);
+		return true;
+	}
+	if (Request.NextStage == ESpawnPacerStage::Release && !PoolHasRoom(Class))
+	{
+		Request.NextStage = ESpawnPacerStage::Destroy; // a full pool: the rest are destroyed
+	}
+	return false;
 }
 
 bool USpawnPacerSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
@@ -113,6 +214,10 @@ void USpawnPacerSubsystem::Deinitialize()
 	}
 	Incoming.Empty();
 	OpenBatches.Empty();
+	Pools.Empty();
+	ParkedActors.Empty();
+	FreshSnapshots.Empty();
+	OnResetVerified.Clear();
 	OnBatchComplete.Clear();
 	HeadQueue = nullptr;
 	Super::Deinitialize();
@@ -160,6 +265,7 @@ bool USpawnPacerSubsystem::RequestSpawn(FSpawnPacerSpawnParams&& Params)
 	Request.OnSpawned = MoveTemp(Params.OnSpawned);
 	Request.BatchId = Params.BatchId;
 	Request.NextStage = Mode == ESpawnPacerSplitMode::Whole ? ESpawnPacerStage::Spawn : ESpawnPacerStage::Construct;
+	Request.FirstStage = Request.NextStage;
 	Request.bHoldBackComponents = Mode == ESpawnPacerSplitMode::PerComponent;
 	Request.Priority = Params.Priority;
 	Request.CollisionHandling = Params.CollisionHandling;
@@ -169,9 +275,9 @@ bool USpawnPacerSubsystem::RequestSpawn(FSpawnPacerSpawnParams&& Params)
 
 bool USpawnPacerSubsystem::RequestRelease(AActor* Actor, ESpawnPacerPriority Priority, int32 BatchId)
 {
-	if (!IsValid(Actor))
+	if (!IsValid(Actor) || ParkedActors.Contains(Actor))
 	{
-		return false;
+		return false; // gone, or already parked
 	}
 	bActive = true;
 
@@ -206,10 +312,70 @@ bool USpawnPacerSubsystem::RequestRelease(AActor* Actor, ESpawnPacerPriority Pri
 	Request.Class = Actor->GetClass();
 	Request.Actor = Actor;
 	Request.BatchId = BatchId;
-	Request.NextStage = ESpawnPacerStage::Destroy;
+	// Parked if its class is pooled (Destroy instead if the pool is full when the job comes up, ResolvePool).
+	Request.NextStage = PoolCaps.FindRef(Actor->GetClass()) > 0 ? ESpawnPacerStage::Release : ESpawnPacerStage::Destroy;
 	Request.Priority = Priority;
 	AddToBatch(BatchId);
 	return true;
+}
+
+void USpawnPacerSubsystem::SetClassVerifierIgnore(TSubclassOf<AActor> Class, const TSet<FName>& PropertyNames)
+{
+	if (Class)
+	{
+		VerifierIgnore.Add(Class.Get(), PropertyNames);
+	}
+}
+
+void USpawnPacerSubsystem::SetClassPoolCap(TSubclassOf<AActor> Class, int32 Cap)
+{
+	if (Class)
+	{
+		PoolCaps.Add(Class.Get(), FMath::Max(Cap, 0));
+	}
+}
+
+int32 USpawnPacerSubsystem::GetNumParked(TSubclassOf<AActor> Class) const
+{
+	const FSpawnPacerPool* Pool = Class ? Pools.Find(Class.Get()) : nullptr;
+	if (!Pool)
+	{
+		return 0;
+	}
+	int32 Valid = 0;
+	for (const FSpawnPacerParkedActor& Parked : Pool->Parked)
+	{
+		Valid += IsValid(Parked.Actor) ? 1 : 0;
+	}
+	return Valid;
+}
+
+int32 USpawnPacerSubsystem::Prewarm(TSubclassOf<AActor> Class, int32 Count, ESpawnPacerPriority Priority, int32 BatchId)
+{
+	if (!Class)
+	{
+		return 0;
+	}
+	// Room after the parked actors and the pre-warms already queued, never negative (S7 code review).
+	int32 QueuedPrewarms = 0;
+	ForEachOpenRequest([&QueuedPrewarms, &Class](FSpawnPacerRequest& Request)
+	{
+		QueuedPrewarms += (Request.Kind == ESpawnPacerRequestKind::Prewarm && Request.Class == Class) ? 1 : 0;
+	});
+	const int32 Room = FMath::Max(0, PoolCaps.FindRef(Class.Get()) - GetNumParked(Class) - QueuedPrewarms);
+	const int32 Queued = FMath::Clamp(Count, 0, Room);
+	for (int32 Index = 0; Index < Queued; ++Index)
+	{
+		FSpawnPacerSpawnParams Params;
+		Params.Class = Class;
+		Params.Transform = FTransform(SpawnPacer::ParkLocation);
+		Params.Priority = Priority;
+		Params.BatchId = BatchId;
+		Params.CollisionHandling = ESpawnActorCollisionHandlingMethod::AlwaysSpawn; // they all wait at one place
+		RequestSpawn(MoveTemp(Params));
+		Incoming.Last().Kind = ESpawnPacerRequestKind::Prewarm;
+	}
+	return Queued;
 }
 
 void USpawnPacerSubsystem::ForEachOpenRequest(TFunctionRef<void(FSpawnPacerRequest&)> Visitor)
@@ -280,19 +446,10 @@ FSpawnPacerRequest* USpawnPacerSubsystem::FindHead()
 		while (Queue.Head < Queue.Requests.Num())
 		{
 			FSpawnPacerRequest& Request = Queue.Requests[Queue.Head];
-			if (Request.bCancelled)
+			if ((Request.bCancelled && ResolveCancel(Request)) || ResolvePool(Request))
 			{
-				const bool bSpawn = Request.Kind == ESpawnPacerRequestKind::Spawn;
-				if (IsHalfSpawned(Request))
-				{
-					Request.NextStage = ESpawnPacerStage::Destroy; // half-spawned: cleaned up by a budgeted Destroy job
-				}
-				else if (!(bSpawn && Request.NextStage == ESpawnPacerStage::Destroy))
-				{
-					End(Request, EOutcome::Cancelled); // nothing to clean up (not started, or a release): no job, no cost
-					++Queue.Head;
-					continue;
-				}
+				++Queue.Head; // ended without a job
+				continue;
 			}
 			if (Request.NextStage == ESpawnPacerStage::Register)
 			{
@@ -324,18 +481,27 @@ bool USpawnPacerSubsystem::RunStage(FSpawnPacerRequest& Request)
 	auto Finished = [this, &Request](AActor* Actor)
 	{
 		// Valid here = it survived its own BeginPlay; OnSpawned is the caller's first sight of it.
-		if (IsValid(Actor))
-		{
-			if (Request.OnSpawned)
-			{
-				Request.OnSpawned(*Actor);
-			}
-			End(Request, EOutcome::Completed);
-		}
-		else
+		if (!IsValid(Actor))
 		{
 			End(Request, EOutcome::Dropped);
+			return true;
 		}
+		if (bVerifyReset && PoolCaps.FindRef(Actor->GetClass()) > 0 && !FreshSnapshots.Contains(Actor))
+		{
+			// Fresh = right after its first FinishSpawning, before OnSpawned hands it to anyone (02 section 11).
+			FreshSnapshots.Add(Actor, FSpawnPacerResetVerifier::Capture(*Actor, VerifierIgnore.FindRef(Actor->GetClass())));
+		}
+		if (Request.Kind == ESpawnPacerRequestKind::Prewarm)
+		{
+			Request.Actor = Actor;
+			Request.NextStage = ESpawnPacerStage::Release; // parked by its own budgeted job, never handed out
+			return false;
+		}
+		if (Request.OnSpawned)
+		{
+			Request.OnSpawned(*Actor);
+		}
+		End(Request, EOutcome::Completed);
 		return true;
 	};
 
@@ -420,17 +586,135 @@ bool USpawnPacerSubsystem::RunStage(FSpawnPacerRequest& Request)
 		{
 			Actor->Destroy();
 		}
-		// A spawn request only reaches Destroy by being cancelled half-spawned. A release whose actor was already
-		// destroyed behind our back is dropped, like any stage that finds its actor gone (02 section 8).
-		const bool bSpawn = Request.Kind == ESpawnPacerRequestKind::Spawn;
-		End(Request, bSpawn ? EOutcome::Cancelled : (bValid ? EOutcome::Completed : EOutcome::Dropped));
+		// Cancelled (a half-spawned actor cleaned up); else done, or dropped if its actor was already destroyed behind
+		// our back, like any stage that finds its actor gone (02 section 8). A pre-warmed actor with no room in its
+		// pool ends here too, as completed.
+		End(Request, Request.bCancelled ? EOutcome::Cancelled : (bValid ? EOutcome::Completed : EOutcome::Dropped));
+		return true;
+	}
+
+	case ESpawnPacerStage::Acquire:
+	{
+		// ResolvePool found an acquirable actor in this same peek, and nothing ran in between.
+		UClass* Class = Request.Class.Get();
+		const int32 Index = FindAcquirable(Class);
+		check(Index != INDEX_NONE);
+		FSpawnPacerPool& Pool = Pools.FindChecked(Class);
+		FSpawnPacerParkedActor Parked = Pool.Parked[Index];
+		Pool.Parked.RemoveAt(Index, EAllowShrinking::No);
+		ParkedActors.Remove(Parked.Key);
+		AActor* Actor = Parked.Actor;
+		Unpark(Parked, Request.Transform);
+		if (bVerifyReset && IsValid(Actor))
+		{
+			// Step 5 of the contract: verify, then Initialize (02 section 11).
+			if (const FSpawnPacerSnapshot* Fresh = FreshSnapshots.Find(Actor))
+			{
+				TArray<FSpawnPacerLeak> Leaks;
+				FSpawnPacerResetVerifier::Compare(*Fresh, FSpawnPacerResetVerifier::Capture(*Actor, VerifierIgnore.FindRef(Class)), Leaks);
+				for (const FSpawnPacerLeak& Leak : Leaks)
+				{
+					++ResetLeaks[static_cast<int32>(Leak.Kind)];
+				}
+				FrameResetLeaks += Leaks.Num();
+				OnResetVerified.Broadcast(*Actor, Leaks);
+			}
+		}
+		if (Request.Initialize && IsValid(Actor))
+		{
+			Request.Initialize(*Actor); // step 5 of the contract: after OnPoolAcquired (S8 verifies first)
+			if (Request.bCancelled && IsValid(Actor))
+			{
+				Park(*Actor); // its batch was cancelled from inside Initialize: back to the pool, never handed out
+				End(Request, EOutcome::Cancelled);
+				return true;
+			}
+		}
+		return Finished(Actor);
+	}
+
+	case ESpawnPacerStage::Release:
+	{
+		AActor* Actor = Request.Actor.Get();
+		if (!IsValid(Actor))
+		{
+			End(Request, EOutcome::Dropped);
+			return true;
+		}
+		Park(*Actor);
+		End(Request, Request.bCancelled ? EOutcome::Cancelled : EOutcome::Completed);
 		return true;
 	}
 
 	default:
-		checkNoEntry(); // Acquire and Release come with S7
+		checkNoEntry();
 		End(Request, EOutcome::Dropped);
 		return true;
+	}
+}
+
+void USpawnPacerSubsystem::Park(AActor& Actor)
+{
+	// Step 1: the game's half, while the actor can still read its components.
+	if (Actor.Implements<USpawnPacerPoolable>())
+	{
+		ISpawnPacerPoolable::Execute_OnPoolReleased(&Actor);
+	}
+	FSpawnPacerParkedActor& Parked = Pools.FindOrAdd(Actor.GetClass()).Parked.AddDefaulted_GetRef();
+	Parked.Actor = &Actor;
+	Parked.Key = &Actor;
+	Parked.ParkedFrame = GFrameCounter;
+	ParkedActors.Add(&Actor);
+
+	// Steps 2-3: timers and latent actions cleared for the actor and every component, unconditionally (the engine clears
+	// none on its own, 01b #11; latent removal takes effect at the next latent update); ticks remembered and switched
+	// off, the components' too (SetActorTickEnabled touches only the actor's own tick, 01b #12).
+	FTimerManager& Timers = GetWorld()->GetTimerManager();
+	FLatentActionManager& Latent = GetWorld()->GetLatentActionManager();
+	Timers.ClearAllTimersForObject(&Actor);
+	Latent.RemoveActionsForObject(&Actor);
+	Parked.bActorTickWasEnabled = Actor.IsActorTickEnabled();
+	Actor.SetActorTickEnabled(false);
+	TInlineComponentArray<UActorComponent*> Components(&Actor);
+	for (UActorComponent* Component : Components)
+	{
+		Timers.ClearAllTimersForObject(Component);
+		Latent.RemoveActionsForObject(Component);
+		if (Component->IsComponentTickEnabled())
+		{
+			Parked.TickingComponents.Add(Component);
+			Component->SetComponentTickEnabled(false);
+		}
+	}
+
+	// Step 4: out of the game.
+	Actor.SetActorEnableCollision(false);
+	Actor.SetActorHiddenInGame(true);
+	Actor.SetActorLocation(SpawnPacer::ParkLocation, false, nullptr, ETeleportType::ResetPhysics);
+}
+
+void USpawnPacerSubsystem::Unpark(FSpawnPacerParkedActor& Parked, const FTransform& Transform)
+{
+	AActor& Actor = *Parked.Actor;
+	// Steps 1-3: where it is wanted, without carrying any velocity over; collision and visibility as a fresh actor of
+	// its class has them (the class default object), not as they were at release (a dying enemy may have hidden itself
+	// first, S7 code review); the ticks that were on, back on.
+	const AActor* Fresh = Actor.GetClass()->GetDefaultObject<AActor>();
+	Actor.SetActorTransform(Transform, false, nullptr, ETeleportType::ResetPhysics);
+	Actor.SetActorEnableCollision(Fresh->GetActorEnableCollision());
+	Actor.SetActorHiddenInGame(Fresh->IsHidden());
+	Actor.SetActorTickEnabled(Parked.bActorTickWasEnabled);
+	for (const TWeakObjectPtr<UActorComponent>& Component : Parked.TickingComponents)
+	{
+		if (UActorComponent* Ticking = Component.Get())
+		{
+			Ticking->SetComponentTickEnabled(true);
+		}
+	}
+	// Step 4: the game's half.
+	if (Actor.Implements<USpawnPacerPoolable>())
+	{
+		ISpawnPacerPoolable::Execute_OnPoolAcquired(&Actor);
 	}
 }
 
@@ -539,6 +823,11 @@ void USpawnPacerSubsystem::RunFrame()
 	CSV_CUSTOM_STAT(SpawnPacer, RegisterMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Register)], ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, FinishMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Finish)], ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, DestroyMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Destroy)], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(SpawnPacer, AcquireMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Acquire)], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(SpawnPacer, ReleaseMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Release)], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(SpawnPacer, Parked, ParkedActors.Num(), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(SpawnPacer, ResetLeaks, FrameResetLeaks, ECsvCustomStatOp::Set);
+	FrameResetLeaks = 0;
 
 	// Reset after publishing, so what ends between two frames (a release taking over a half-spawned request) is counted
 	// in the next frame's stats.

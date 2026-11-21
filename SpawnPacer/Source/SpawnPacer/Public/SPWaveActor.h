@@ -3,6 +3,7 @@
 #pragma once
 
 #include "GameFramework/Actor.h"
+#include "SpawnPacerPoolable.h"
 #include "SPWaveActor.generated.h"
 
 class UStaticMesh;
@@ -15,7 +16,7 @@ class USPWaveBrainComponent;
  * each has its own class default object, its own component set and its own spawn cost (02_System_Architecture.md 4.2).
  */
 UCLASS(Abstract)
-class ASPWaveActor : public AActor
+class ASPWaveActor : public AActor, public ISpawnPacerPoolable
 {
 	GENERATED_BODY()
 
@@ -39,6 +40,15 @@ public:
 
 	/** A pool is parking this actor: stop what would otherwise keep running while it waits. */
 	void PrepareForParking();
+
+	//~ Begin ISpawnPacerPoolable (SpawnPacer's pool, SPP): the same two callbacks the B3 pool calls itself
+	virtual void OnPoolReleased_Implementation() override { PrepareForParking(); }
+	virtual void OnPoolAcquired_Implementation() override
+	{
+		PrepareForReuse();
+		NotifyReady(); // a reused actor doesn't run BeginPlay again, so the pool's acquire is its "ready"
+	}
+	//~ End ISpawnPacerPoolable
 
 protected:
 	/** A subclass's own BeginPlay work. Called by BeginPlay after Super::BeginPlay and before the ready notification. */

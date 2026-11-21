@@ -329,6 +329,38 @@ The roadmap's test is `PerComponentBeginPlaySeesEveryComponent`: a split spawn s
 - `SPS` changed meaning in S6 (boss PerComponent; the S5 batch had it Deferred, now `SPSBossDeferred`), as stated in `run_bench.py` and 05 G4.
 - Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
 
+
+---
+
+## Steps S7 and S8 · Pool, reset contract, reset verifier (2026-11-21)
+
+Job `20261121_102634_03cb67`: build both Development targets, then all automation tests. The owner's direction of 2026-11-21 ended Phase 5 here: one build-and-test job, no new benchmark campaign, no further code review.
+
+| # | Check | Result |
+|---|---|---|
+| S7-a | **Build** | ✅ editor and game `Result: Succeeded`, **0 errors, 0 warnings** |
+| S7-b | **27 tests, all passed** | ✅ 9 policy, 11 subsystem, 7 pool (`ReleaseParksAndAcquireReuses`, `ParkedActorCostsNoTick`, `TimerFromUseNeverFiresAfterReuse`, `FullPoolDestroysTheRest`, `PrewarmFillsThePool`, `EdgeCasesFromCodeReview`, `VerifierFindsAPropertyLeftChanged`); `editor exit code 0` |
+
+- **S7 (pool) is complete**, and its two roadmap checks pass: a parked actor costs no tick, and a timer set during use never fires after reuse. Its code review (7 findings) was done before the owner's direction, and every finding was fixed (05 H2, 07).
+- **S8 is partial.** `FSpawnPacerResetVerifier` (snapshot, compare, leak kinds) and its hook in the pool (fresh snapshot after the first spawn, check after each acquire) are built, and one test passes. The seeded-defect class, the soak mode and its runner were drafted but **not built or run**, so SC5 is **not measured**.
+- **S9 (settings, cvars, Blueprint surface) was not built.** The director still sets class rules and pool caps through `SetClassRule` / `SetClassPoolCap`.
+- **SPP was never benchmarked.** The S7 batch was cancelled before it ran.
+
+---
+
+## Success criteria: final status (from existing data only)
+
+The SpawnPacer row is batch `2026-11-21_090236_split_balanced`, configuration `SPS` (6 runs, boss PerComponent, 2 ms). The baselines are batch `2026-11-21_035912_baseline` (4 runs). Both are on the same workload: wave hash `0x29FD2F1C`, 500 actors, work 20000. The two batches were built from different steps, S6 and S3. Nothing below was measured for this table: every number comes from those batches.
+
+| # | Criterion (01 §6.4) | Result | Data |
+|---|---|---|---|
+| SC1 | 0 frames over 33.3 ms in W and D, every SPS/SPP run | **Met for SPS** (fixed-step): 0 in 6 of 6 runs. The uncapped real-time confirmation run: **not measured**. SPP: **not measured** | `split_balanced`, SPS |
+| SC2 | W max < 33.3 ms and below every baseline with non-overlapping ranges; p99 ≤ pre-wave median + budget + 1 ms | **Partly met.** Max 6.47 [6.25–7.60] ms: far below B0 (84.17), B3 (17.37), B1 (8.81), and below B2's median (7.57), but **its range overlaps B2's [6.40–8.07]**, so not separated. p99 5.71 ms ≤ 3.19 + 2.0 + 1.0 = 6.19 ms: met | `split_balanced` vs `baseline` |
+| SC3 | Spawn work ≤ 1.1 × budget in ≥ 99% of SpawnPacer spawn frames; forced frames listed apart | **Met:** 3 of ~996 spawn frames over (99.7% within), 0 forced. B2 at the same budget: 63% within; B1: 26% | `split_balanced` vs `baseline` |
+| SC4 | Latency reported for all; utilisation ≥ 0.75 | **Met on utilisation:** 0.86 [0.83–0.87] of the 2 ms budget in frames with spawn work. **Latency is the price:** 54 [50–63] frames per wave against B2's 42, B1's 35, B0's and B3's 0. SPP: **not measured** | `split_balanced` (utilisation computed from the raw captures), `baseline` |
+| SC5 | 10,000-cycle soak: 0 leaks on clean classes; each seeded kind detected in 100% | **Not measured.** The verifier is built and tested (`VerifierFindsAPropertyLeftChanged`: a correct reset gives 0 leaks, a skipped one exactly 1); the leaky class and the soak were not built (09 S8) | — |
+| SC6 | Pool memory: parked ≤ live + 5% | **Not measured** | — |
+
 ---
 
 ## Phases 5–8 (to be written)

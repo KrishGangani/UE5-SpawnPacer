@@ -4,6 +4,8 @@
 
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SpawnPacerTestTypes)
 
@@ -50,4 +52,37 @@ ASpawnPacerTestPartsActor::ASpawnPacerTestPartsActor()
 	Dormant = CreateDefaultSubobject<USceneComponent>(TEXT("Dormant"));
 	Dormant->SetupAttachment(RootComponent);
 	Dormant->bAutoRegister = false;
+}
+
+USpawnPacerTestTickComponent::USpawnPacerTestTickComponent()
+{
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = true;
+}
+
+void USpawnPacerTestTickComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	++Ticks;
+}
+
+ASpawnPacerTestPoolActor::ASpawnPacerTestPoolActor()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
+	Ticker = CreateDefaultSubobject<USpawnPacerTestTickComponent>(TEXT("Ticker"));
+}
+
+void ASpawnPacerTestPoolActor::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	++Ticks;
+}
+
+void ASpawnPacerTestPoolActor::ArmTimers(float Seconds)
+{
+	FTimerHandle ActorTimer;
+	FTimerHandle ComponentTimer;
+	GetWorldTimerManager().SetTimer(ActorTimer, this, &ASpawnPacerTestPoolActor::OnTimer, Seconds, false);
+	GetWorldTimerManager().SetTimer(ComponentTimer, FTimerDelegate::CreateUObject(Ticker.Get(), &USpawnPacerTestTickComponent::OnTimer), Seconds, false);
 }

@@ -6,6 +6,7 @@
 
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
+#include "SpawnPacerPoolable.h"
 #include "Templates/Function.h"
 #include "SpawnPacerTestTypes.generated.h"
 
@@ -74,4 +75,61 @@ public:
 	/** PartA's offset from the root, and PartB's from PartA. */
 	static const FVector PartAOffset;
 	static const FVector PartBOffset;
+};
+
+/** S7: a component that counts its ticks and its timer's firings. */
+UCLASS(NotBlueprintable, HideDropdown)
+class USpawnPacerTestTickComponent : public UActorComponent
+{
+	GENERATED_BODY()
+
+public:
+	USpawnPacerTestTickComponent();
+
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+	void OnTimer() { ++TimerFired; }
+
+	int32 Ticks = 0;
+	int32 TimerFired = 0;
+};
+
+/** S7: a pooled actor that ticks, has a ticking component, counts its pool callbacks, and can arm timers during use. */
+UCLASS(NotBlueprintable, NotPlaceable, HideDropdown)
+class ASpawnPacerTestPoolActor : public ASpawnPacerTestActor, public ISpawnPacerPoolable
+{
+	GENERATED_BODY()
+
+public:
+	ASpawnPacerTestPoolActor();
+
+	virtual void Tick(float DeltaSeconds) override;
+
+	//~ Begin ISpawnPacerPoolable
+	virtual void OnPoolReleased_Implementation() override
+	{
+		++Released;
+		Uses = bResetUses ? 0 : Uses;
+	}
+	virtual void OnPoolAcquired_Implementation() override { ++Acquired; }
+	//~ End ISpawnPacerPoolable
+
+	/** One timer on the actor and one on its component, both firing once after Seconds. */
+	void ArmTimers(float Seconds);
+
+	void OnTimer() { ++TimerFired; }
+
+	UPROPERTY()
+	TObjectPtr<USpawnPacerTestTickComponent> Ticker;
+
+	int32 Ticks = 0;
+	int32 Released = 0;
+	int32 Acquired = 0;
+	int32 TimerFired = 0;
+
+	/** S8: a reflected per-life value the verifier can see; the test decides whether OnPoolReleased resets it. */
+	UPROPERTY()
+	int32 Uses = 0;
+
+	bool bResetUses = true;
 };

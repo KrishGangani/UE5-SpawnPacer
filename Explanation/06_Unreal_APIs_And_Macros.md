@@ -416,3 +416,57 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 6. **Common mistakes.** Accepting the `_MAX` entry; assuming case-sensitive matching.
 7. **Example.** `const int64 Value = StaticEnum<ESpawnPacerSplitMode>()->GetValueByNameString(Name);`
 8. **In this project.** The director's `ParseSplitMode` and the tests' `ModeName` (05 G3, G4).
+
+## APIs added in step S7 (pool + reset contract)
+
+| # | API | First used in |
+|---|---|---|
+| 30 | `UINTERFACE`, `BlueprintNativeEvent`, `Implements<>`, `Execute_…` | S7 |
+| 31 | `FTimerManager::ClearAllTimersForObject`, `FLatentActionManager::RemoveActionsForObject` / `GetNumActionsForObject`, `FPendingLatentAction` | S7 |
+| 32 | `SetComponentTickEnabled` / `IsComponentTickEnabled`, `GetActorEnableCollision`, `IsHidden` | S7 |
+
+## 30. `UINTERFACE`, `BlueprintNativeEvent`, `Implements<>`, `Execute_…`
+
+1. **What it is.** A reflected interface: a `UINTERFACE` class (`USpawnPacerPoolable : UInterface`) for reflection and an `I` class (`ISpawnPacerPoolable`) with the functions.
+2. **Why it exists.** Unrelated classes (an enemy, a projectile, a Blueprint actor) can share one contract.
+3. **How it works.** A `BlueprintNativeEvent` is implemented in C++ as `Name_Implementation` and can be overridden in Blueprint. A caller asks `Object->Implements<USpawnPacerPoolable>()` and calls `ISpawnPacerPoolable::Execute_OnPoolReleased(Object)`, which reaches the C++ or the Blueprint implementation. Calling the `I` function directly would miss a Blueprint implementation.
+4. **When to use it.** A contract a plugin defines and game classes fulfil.
+5. **When not to.** One concrete base class would do.
+6. **Common mistakes.** `Cast<ISpawnPacerPoolable>` on a Blueprint-only implementer (it is null); forgetting `_Implementation`; not exporting the `I` class when another module's classes inherit it.
+7. **Example.** `if (Actor.Implements<USpawnPacerPoolable>()) { ISpawnPacerPoolable::Execute_OnPoolReleased(&Actor); }`
+8. **In this project.** `Park` / `Unpark` (05 H2), `ASPWaveActor` (05 H3), the pool test actor (05 H4).
+
+## 31. `ClearAllTimersForObject`, `RemoveActionsForObject` / `GetNumActionsForObject`, `FPendingLatentAction`
+
+1. **What it is.** `FTimerManager::ClearAllTimersForObject(const void*)` (`Engine/Public/TimerManager.h:291`) clears every timer whose delegate is bound to that object. `FLatentActionManager::RemoveActionsForObject` (`Classes/Engine/LatentActionManager.h:138`) removes an object's latent actions (Delay, MoveTo…); `GetNumActionsForObject` (149) counts them; `FPendingLatentAction` is the base of a latent action.
+2. **Why it exists.** Stopping deferred work that belongs to an object.
+3. **How it works.** Timers are cleared at once. Latent removal is **queued** and applied at the next latent update (`Private/LatentActionManager.cpp:52–74`), so a count read straight after it still includes them.
+4. **When to use it.** Parking a pooled actor: its last life's timers and latent actions must not fire in the next.
+5. **When not to.** Expecting the engine to do it on destroy or EndPlay (it doesn't, 01b #11).
+6. **Common mistakes.** Clearing only the actor, not its components (a component's timer is bound to the component); checking the latent count in the same frame.
+7. **Example.** `Timers.ClearAllTimersForObject(Component); Latent.RemoveActionsForObject(Component);`
+8. **In this project.** `Park` (05 H2); the test `TimerFromUseNeverFiresAfterReuse` (05 H4).
+
+## 32. `SetComponentTickEnabled` / `IsComponentTickEnabled`, `GetActorEnableCollision`, `IsHidden`
+
+1. **What it is.** A component's tick switch (`Classes/Components/ActorComponent.h:1002, 1014`); the actor's collision and visibility state.
+2. **Why it exists.** Reading the state before switching it off, so it can be restored exactly.
+3. **How it works.** `SetActorTickEnabled` touches only the actor's own tick (06 §16), so a pool switches every ticking component off itself and remembers which.
+4. **When to use it.** Parking and unparking.
+5. **When not to.** Switching a component on that was off before parking (it may be off on purpose).
+6. **Common mistakes.** Turning every component's tick on at unpark.
+7. **Example.** `if (Component->IsComponentTickEnabled()) { Parked.TickingComponents.Add(Component); Component->SetComponentTickEnabled(false); }`
+8. **In this project.** `Park` / `Unpark` (05 H2).
+
+## API added in step S8 (verifier)
+
+## 33. `TFieldIterator<FProperty>` and `FProperty::ExportTextItem_InContainer`
+
+1. **What it is.** Reflection: iterate a class's properties (`TFieldIterator`) and print one property's value as text (`CoreUObject/Public/UObject/UnrealType.h:592`).
+2. **Why it exists.** The engine's own copy, paste, config and diff tools need every reflected value in a generic form.
+3. **How it works.** `ExportTextItem_InContainer(Out, Object, nullptr, nullptr, PPF_None)` writes the value; object references are written as paths, and a dynamic multicast delegate is written as its invocation list (`FMulticastDelegateProperty`), so a binding left behind shows up.
+4. **When to use it.** Comparing an object with an earlier state of itself, field by field, without per-class code.
+5. **When not to.** Every frame in a shipped game (string work for every property); plain C++ members (invisible).
+6. **Common mistakes.** Comparing transforms that legitimately change; expecting non-`UPROPERTY` state to show.
+7. **Example.** `for (TFieldIterator<FProperty> It(Obj.GetClass()); It; ++It) { FString T; It->ExportTextItem_InContainer(T, &Obj, nullptr, nullptr, PPF_None); }`
+8. **In this project.** `FSpawnPacerResetVerifier::Capture` (05 I1).

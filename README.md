@@ -4,11 +4,14 @@
 
 **Domain:** Frame-time consistency · actor lifecycle · **Difficulty:** ★★★½☆ · **Engine:** UE 5.8.4
 
-> **Status: in progress. There are no results yet.** Phases 1–4 are done: the problem, the verified research, the final architecture and the UE project foundation. Phase 5 has started: the demo workload and the plain-`SpawnActor` baseline exist (S1); SpawnPacer itself is built only after the baselines are captured. Sections marked *(pending)* are filled in only from real measurements, in the phase named. The success criteria below are **targets fixed before any system code exists, not results**.
+> **Status: Phase 5 ended early by the owner's direction (2026-11-21).**
+> - **Built and tested** (27 automation tests pass, 0 warnings): the cost model, the admission scheduler, staged spawning (Whole, Deferred, PerComponent), the pool with its reset contract, and the reset verifier.
+> - **Measured:** the spawn path (SPS) against four baselines.
+> - **Not done:** the leak soak (SC5), pool memory (SC6), any SPP benchmark, settings, cvars and the Blueprint surface (S9). Results below come only from existing batches (09).
 
 | Phase | 1 Problem | 2 Research | 3 Architecture | 4 Foundation | 5 Implementation | 6 Explanation | 7 Testing | 8 Profiling | 9 Review | 10 Portfolio |
 |---|---|---|---|---|---|---|---|---|---|---|
-| State | ✓ | ✓ | ✓ final | ✓ | in progress (S6 of 9 done: per-component split + ablation) | ongoing | — | — | — | — |
+| State | ✓ | ✓ | ✓ final | ✓ | ended: S1–S7 done, S8 partial, S9 not done | partial | — | — | — | — |
 
 ---
 
@@ -55,15 +58,50 @@ Final (v1.0): [Explanation/02_System_Architecture.md](Explanation/02_System_Arch
 
 ## Before / after comparison
 
-*(pending, Phase 8)*. Six configurations on one fixed workload: B0–B3, **SPS** (SpawnPacer, spawn path) and **SPP** (SpawnPacer, pool path).
+One fixed workload: a 500-actor wave (drones, crates, grunts, a few 24-part bosses), 3 waves per run, packaged Development build, fixed step at 60 fps. SpawnPacer's spawn path (**SPS**, 2 ms budget, 6 runs) against the plain `SpawnActor` burst (B0), the deferred pattern with a count cap (B1), the time cap checked between items (B2, the Mass and SpawnBudget model, at the same 2 ms) and a simple pool (B3) (4 runs each).
+
+| | B0 burst | B1 count cap | B2 time cap | B3 simple pool | **SPS** |
+|---|---|---|---|---|---|
+| Wave-window max frame time (ms) | 84.17 | 8.81 | 7.57 | 17.37 | **6.47** |
+| Frames over 33.3 ms | 12 | 0 | 0 | 0 | **0** |
+| Spawn frames over 1.1 × 2 ms budget | 100% | 74% | 37% | 100% | **0.3%** |
+| Wave latency (frames) | 0 | 35 | 42 | 0 | 54 |
+
+```mermaid
+xychart-beta
+    title "Worst frame in the wave window (ms, median of runs)"
+    x-axis ["B0 burst", "B1 count cap", "B2 time cap", "B3 pool", "SPS"]
+    y-axis "ms" 0 --> 90
+    bar [84.17, 8.81, 7.57, 17.37, 6.47]
+```
+
+```mermaid
+xychart-beta
+    title "Spawn frames over 1.1 x the 2 ms budget (%)"
+    x-axis ["B1 count cap", "B2 time cap", "SPS"]
+    y-axis "%" 0 --> 80
+    bar [74, 37, 0.3]
+```
 
 ## Benchmark results
 
-*(pending, Phase 8)*. Hitch counts, p99 and max frame time per window, wave latency, budget adherence, pool memory, soak leak counts. Raw data and protocol: [Benchmarks/](Benchmarks/README.md).
+Against the success criteria (full table in [09](Explanation/09_Testing_And_Benchmarks.md)):
+- **SC1:** met for SPS, with 0 frames over 33.3 ms in every run (fixed step).
+- **SC2:** partly met. The max is below every baseline's median, but its run range overlaps B2's.
+- **SC3:** met. 99.7% of spawn frames are within 1.1 × budget, with 0 forced.
+- **SC4:** utilisation is 0.86 of the budget. Latency is the price: 54 frames against B2's 42.
+- **SC5 and SC6:** not measured.
+
+Honest reading:
+- At this workload, *every* paced baseline already removes the hitches.
+- SpawnPacer's measurable difference is **budget adherence**, paid for with about 12 more frames of latency per wave.
+- The split ablation found that splitting the boss matters only at a 1 ms budget. There, the Deferred seam alone is enough: per-component splitting adds jobs without a further gain.
+
+Raw data and protocol: [Benchmarks/](Benchmarks/README.md).
 
 ## Recorded demonstration
 
-*(pending, Phase 10)*. B0 vs SpawnPacer on the same wave, with a live frame-time graph and the 33.3 ms line.
+Not recorded (dropped by the owner's direction).
 
 ## Main risk
 

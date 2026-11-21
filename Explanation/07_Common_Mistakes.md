@@ -110,3 +110,26 @@
 | ⚠ caught: **accepting the `_MAX` entry of a reflected enum** | A bogus mode runs as another and is recorded as itself | Bound the parsed value to the real enumerators (06 §29) | Pass `-SPBossSplit=ESpawnPacerSplitMode_MAX` |
 | **Registering a held-back component after BeginPlay** | The actor's BeginPlay doesn't see the part | `Finish` only when nothing is held back (02 §8) | The test `PerComponentBeginPlaySeesEveryComponent` |
 | **Reading parts in `PostRegisterAllComponents` with PerComponent** | Cached state from parts that weren't registered yet | Keep such a class Whole or Deferred (02 §13) | Log the registered count there |
+
+## Pool and reset contract (step S7)
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| **Clearing only the actor's timers** | A component's timer fires in the next life | Clear the actor and every component (05 H2) | The test `TimerFromUseNeverFiresAfterReuse` |
+| **Switching every component tick on at unpark** | A component that was meant to be off ticks after reuse | Remember which were on, restore exactly those | Compare tick states before park and after unpark |
+| **Deciding "acquire or spawn" when the request is made** | A request spawns although a parked actor was released meanwhile, or acquires from an emptied pool | Decide at the head, just before the job (`ResolvePool`) | Release and request in the same frame |
+| **A cancelled pre-warm left live** | A visible actor at the park location, never pooled | A pre-warm that has spawned is parked even if cancelled (`ResolveCancel`) | Count live actors at the park location |
+| ⚠ caught: **releasing an actor twice before the first release ran** | It is parked twice and handed out to two callers | Refuse a release of a parked actor, **and** end a queued second release at the head (05 H2) | The test `EdgeCasesFromCodeReview` |
+| ⚠ caught: **restoring the state an actor had at release** | A reused enemy is invisible: it hid itself while dying | Restore the fresh state (the class defaults) | The same test |
+| ⚠ caught: **reusing an actor in the frame it was parked** | A Delay started in `OnPoolAcquired` never fires | Not acquirable until the next frame, after the latent update (06 §31) | The same test |
+| ⚠ caught: **cleaning dead pool entries only at the end** | Releases are destroyed although the pool has room | Sweep the whole pool when it looks full (05 H2) | Destroy parked actors in the middle of a pool |
+| ⚠ caught: **a run that starts before its pre-warm finished** | Wave 1 completes early: pre-warmed actors' BeginPlay counted as wave actors | The warm-up waits for the pre-warm, and the run fails after a timeout | Lower the warm-up and watch the director's log |
+| **Calling the `I`-class function instead of `Execute_`** | A Blueprint implementation never runs | `ISpawnPacerPoolable::Execute_OnPoolReleased(Actor)` (06 §30) | A Blueprint poolable that prints |
+
+## Reset verifier (step S8, partial)
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| **Snapshotting "fresh" after first use** | The verifier never reports the leaks of the first life | Snapshot when the actor first finishes spawning, before `OnSpawned` (05 I2) | Seed a leak in the first life only |
+| **Comparing values that every reuse changes** | Every acquire reports leaks | Ignore the transform, and a class's per-spawn parameters (`SetClassVerifierIgnore`) | Log the leak's `Where` |
+| **Expecting it to see plain C++ members** | A leak in a non-`UPROPERTY` field passes | Keep per-life gameplay state in `UPROPERTY`s | Stated limit (02 §13) |

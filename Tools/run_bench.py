@@ -73,10 +73,12 @@ CONFIGS = {
     "SPS1ms": "-SPConfig=SPS -SPBudgetMs=1.0",
     "SPSBossDeferred1ms": "-SPConfig=SPS -SPBudgetMs=1.0 -SPBossSplit=Deferred",
     "SPSBossWhole1ms": "-SPConfig=SPS -SPBudgetMs=1.0 -SPBossSplit=Whole",
+    # SpawnPacer, pool path (S7): pre-warmed during the warm-up, acquired at the wave, parked at the despawn.
+    "SPP": "-SPConfig=SPP -SPBudgetMs=2.0",
 }
 
 SUMMARY_WINDOWS = ("W", "D", "GC", "PRE")
-PACER_CONFIGS = ("SPS", "SPSBossDeferred", "SPSBossWhole", "SPS1ms", "SPSBossDeferred1ms", "SPSBossWhole1ms")   # SPP: S7
+PACER_CONFIGS = ("SPS", "SPSBossDeferred", "SPSBossWhole", "SPS1ms", "SPSBossDeferred1ms", "SPSBossWhole1ms", "SPP")
 
 
 def work_column(config: str) -> str:

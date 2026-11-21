@@ -27,7 +27,8 @@ class USpawnPacerSubsystem;
  *   next frame                   the run report is written; with -SPExit the game quits a few frames later
  *
  * Command line (all optional):
- *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2), or SPS (SpawnPacer, spawn path; 02 9)
+ *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2), SPS (SpawnPacer, spawn path) or SPP (SpawnPacer,
+ *                     pool path: the wave pre-warmed into pools during the warm-up, released by parking; 02 9)
  *   -SPCountCap=K     B1: actors per frame (default 25; the batch script passes the calibrated value)
  *   -SPBudgetMs=MS    B2's time cap and SpawnPacer's budget: the same value for both (default 2.0)
  *   -SPBossSplit=M    SpawnPacer: the boss's split mode, Whole, Deferred or PerComponent (default PerComponent; the
@@ -130,7 +131,7 @@ private:
 	/** Maps -SPConfig to a baseline; unset for an unknown name and for the SpawnPacer configurations. */
 	static TOptional<ESPBaseline> ParseBaseline(const FString& Config);
 
-	/** True for the SpawnPacer configurations (SPS; SPP from S7). */
+	/** True for the SpawnPacer configurations (SPS, SPP). */
 	static bool IsPacerConfig(const FString& Config);
 
 	/** SPS: the wave as one SpawnPacer batch, with the same spawn parameters as the baselines. */

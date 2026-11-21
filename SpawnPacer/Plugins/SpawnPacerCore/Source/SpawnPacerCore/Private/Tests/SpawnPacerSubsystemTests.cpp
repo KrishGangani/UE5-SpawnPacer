@@ -5,6 +5,8 @@
 // lifetime tests do: a game world with a game mode, so actors really begin play. TickTestWorld runs UWorld::Tick
 // (which broadcasts OnWorldPostActorTick, where SpawnPacer works) and advances GFrameCounter.
 
+#include "Engine/LatentActionManager.h"
+#include "LatentActions.h"
 #include "SpawnPacerSubsystem.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/SpawnPacerTestFlags.h"
@@ -561,6 +563,322 @@ bool FSpawnPacerSubsystemPriorityTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("second"), Order[1], UEnum::GetValueAsString(ESpawnPacerPriority::Normal));
 		TestEqual(TEXT("third"), Order[2], UEnum::GetValueAsString(ESpawnPacerPriority::Background));
 	}
+	return true;
+}
+
+#endif // WITH_DEV_AUTOMATION_TESTS
+
+// ---------------------------------------------------------------------------------------------------------------- S7
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+namespace SpawnPacerPoolTests
+{
+	using namespace SpawnPacerSubsystemTests;
+
+	/** Spawns Count pool test actors and drains the queue; returns them (empty on failure). */
+	TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> SpawnPooled(FTestPacerWorld& Test, int32 Count, const FVector& Origin = FVector::ZeroVector)
+	{
+		TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(INDEX_NONE, Origin + FVector(100.0 * Index, 0.0, 0.0), ASpawnPacerTestPoolActor::StaticClass());
+			Params.OnSpawned = [&Spawned](AActor& Actor) { Spawned.Add(CastChecked<ASpawnPacerTestPoolActor>(&Actor)); };
+			Test.Pacer->RequestSpawn(MoveTemp(Params));
+		}
+		Test.TickUntilIdle();
+		return Spawned;
+	}
+
+	void ReleaseAll(FTestPacerWorld& Test, const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>>& Actors)
+	{
+		for (const TWeakObjectPtr<ASpawnPacerTestPoolActor>& Actor : Actors)
+		{
+			Test.Pacer->RequestRelease(Actor.Get());
+		}
+		Test.TickUntilIdle();
+	}
+
+	/** A latent action that never finishes and counts its updates. */
+	class FCountingLatentAction : public FPendingLatentAction
+	{
+	public:
+		explicit FCountingLatentAction(int32& InUpdates) : Updates(InUpdates) {}
+		virtual void UpdateOperation(FLatentResponse& Response) override { ++Updates; }
+
+	private:
+		int32& Updates;
+	};
+}
+
+using namespace SpawnPacerPoolTests;
+
+// Release parks a pooled actor (reset contract, engine half), and a later spawn request reuses it (Acquire job).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolReuseTest, "SpawnPacer.Pool.ReleaseParksAndAcquireReuses", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolReuseTest::RunTest(const FString& Parameters)
+{
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 3);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> First = SpawnPooled(Test, 3);
+	if (!TestEqual(TEXT("spawned"), First.Num(), 3))
+	{
+		return false;
+	}
+	ReleaseAll(Test, First);
+	TestEqual(TEXT("parked"), Test.Pacer->GetNumParked(ASpawnPacerTestPoolActor::StaticClass()), 3);
+	for (const TWeakObjectPtr<ASpawnPacerTestPoolActor>& Actor : First)
+	{
+		if (!TestTrue(TEXT("parked, not destroyed"), Actor.IsValid()))
+		{
+			return false;
+		}
+		TestEqual(TEXT("OnPoolReleased once"), Actor->Released, 1);
+		TestTrue(TEXT("hidden"), Actor->IsHidden());
+		TestFalse(TEXT("no collision"), Actor->GetActorEnableCollision());
+		TestFalse(TEXT("actor tick off"), Actor->IsActorTickEnabled());
+		TestFalse(TEXT("component tick off"), Actor->Ticker->IsComponentTickEnabled());
+	}
+	TestFalse(TEXT("a parked actor can't be released again"), Test.Pacer->RequestRelease(First[0].Get()));
+
+	const FVector Elsewhere(0.0, 1000.0, 0.0);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Second = SpawnPooled(Test, 3, Elsewhere);
+	TestEqual(TEXT("served"), Second.Num(), 3);
+	TestEqual(TEXT("pool emptied"), Test.Pacer->GetNumParked(ASpawnPacerTestPoolActor::StaticClass()), 0);
+	for (int32 Index = 0; Index < Second.Num(); ++Index)
+	{
+		const ASpawnPacerTestPoolActor* Actor = Second[Index].Get();
+		if (!TestNotNull(TEXT("acquired"), Actor))
+		{
+			return false;
+		}
+		TestTrue(TEXT("one of the parked actors"), First.Contains(Second[Index]));
+		TestEqual(TEXT("OnPoolAcquired once"), Actor->Acquired, 1);
+		TestEqual(TEXT("no second BeginPlay"), Actor->BeginPlayCalls, 1);
+		TestFalse(TEXT("visible"), Actor->IsHidden());
+		TestTrue(TEXT("collision back"), Actor->GetActorEnableCollision());
+		TestTrue(TEXT("actor tick back"), Actor->IsActorTickEnabled());
+		TestTrue(TEXT("component tick back"), Actor->Ticker->IsComponentTickEnabled());
+		TestEqual(TEXT("at the new transform"), Actor->GetActorLocation(), Elsewhere + FVector(100.0 * Index, 0.0, 0.0));
+	}
+	return true;
+}
+
+// 03 S7: a parked actor costs no tick, neither its own nor its components'.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolNoTickTest, "SpawnPacer.Pool.ParkedActorCostsNoTick", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolNoTickTest::RunTest(const FString& Parameters)
+{
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 1);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned = SpawnPooled(Test, 1);
+	if (!TestEqual(TEXT("spawned"), Spawned.Num(), 1))
+	{
+		return false;
+	}
+	ASpawnPacerTestPoolActor* Actor = Spawned[0].Get();
+	Test.Tick(5);
+	TestTrue(TEXT("ticks while live"), Actor->Ticks > 0 && Actor->Ticker->Ticks > 0);
+
+	ReleaseAll(Test, Spawned);
+	const int32 ActorTicks = Actor->Ticks;
+	const int32 ComponentTicks = Actor->Ticker->Ticks;
+	Test.Tick(10);
+	TestEqual(TEXT("no actor tick while parked"), Actor->Ticks, ActorTicks);
+	TestEqual(TEXT("no component tick while parked"), Actor->Ticker->Ticks, ComponentTicks);
+
+	SpawnPooled(Test, 1);
+	Test.Tick(5);
+	TestTrue(TEXT("actor ticks again after reuse"), Actor->Ticks > ActorTicks);
+	TestTrue(TEXT("component ticks again after reuse"), Actor->Ticker->Ticks > ComponentTicks);
+	return true;
+}
+
+// 03 S7: a timer or latent action set during one use never fires after the actor is reused.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolTimerTest, "SpawnPacer.Pool.TimerFromUseNeverFiresAfterReuse", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolTimerTest::RunTest(const FString& Parameters)
+{
+	int32 LatentUpdates = 0; // before the world: the latent action keeps a reference to it
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 1);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned = SpawnPooled(Test, 1);
+	if (!TestEqual(TEXT("spawned"), Spawned.Num(), 1))
+	{
+		return false;
+	}
+	ASpawnPacerTestPoolActor* Actor = Spawned[0].Get();
+	Actor->ArmTimers(0.2f); // 12 frames at 60 fps
+	Test.World->GetLatentActionManager().AddNewAction(Actor, 1, new FCountingLatentAction(LatentUpdates));
+	Test.Tick();
+	TestTrue(TEXT("the latent action runs while in use"), LatentUpdates > 0);
+
+	ReleaseAll(Test, Spawned); // parked well before the timers are due
+	SpawnPooled(Test, 1);      // and reused
+	const int32 UpdatesAtReuse = LatentUpdates;
+	Test.Tick(30);             // half a second: long past the timers' time
+	TestEqual(TEXT("reused"), Actor->Acquired, 1);
+	TestEqual(TEXT("the actor's timer never fired"), Actor->TimerFired, 0);
+	TestEqual(TEXT("the component's timer never fired"), Actor->Ticker->TimerFired, 0);
+	TestEqual(TEXT("the latent action is gone"), Test.World->GetLatentActionManager().GetNumActionsForObject(Actor), 0);
+	TestEqual(TEXT("and never ran again"), LatentUpdates, UpdatesAtReuse);
+	return true;
+}
+
+// The S7 code-review cases: a double release parks once; an actor hidden and without collision at release comes back as a
+// fresh actor of its class; an actor parked in a frame is not acquired in that same frame (its latent actions are only
+// removed at the next latent update).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolEdgeTest, "SpawnPacer.Pool.EdgeCasesFromCodeReview", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolEdgeTest::RunTest(const FString& Parameters)
+{
+	TWeakObjectPtr<AActor> SameFrame;
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	UClass* Class = ASpawnPacerTestPoolActor::StaticClass();
+	Test.Pacer->SetClassPoolCap(Class, 2);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned = SpawnPooled(Test, 1);
+	if (!TestEqual(TEXT("spawned"), Spawned.Num(), 1))
+	{
+		return false;
+	}
+	ASpawnPacerTestPoolActor* Actor = Spawned[0].Get();
+
+	Actor->SetActorHiddenInGame(true);       // a dying enemy hides itself...
+	Actor->SetActorEnableCollision(false);   // ...and stops colliding, then is released twice
+	TestTrue(TEXT("first release"), Test.Pacer->RequestRelease(Actor));
+	TestTrue(TEXT("second release, queued before the first ran"), Test.Pacer->RequestRelease(Actor));
+	Test.TickUntilIdle();
+	TestEqual(TEXT("parked once"), Test.Pacer->GetNumParked(Class), 1);
+	TestEqual(TEXT("OnPoolReleased once"), Actor->Released, 1);
+
+	SpawnPooled(Test, 1);
+	TestEqual(TEXT("reused"), Actor->Acquired, 1);
+	TestFalse(TEXT("visible, as a fresh actor"), Actor->IsHidden());
+	TestTrue(TEXT("colliding, as a fresh actor"), Actor->GetActorEnableCollision());
+
+	// Release and request in one frame; every key is warm and the budget is large, so both jobs run in that frame.
+	Test.Pacer->SetBudgetMs(100.0);
+	Test.Pacer->RequestRelease(Actor);
+	FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(INDEX_NONE, FVector::ZeroVector, Class);
+	Params.OnSpawned = [&SameFrame](AActor& Spawn) { SameFrame = &Spawn; };
+	Test.Pacer->RequestSpawn(MoveTemp(Params));
+	Test.Tick();
+	TestTrue(TEXT("both jobs ran in one frame"), SameFrame.IsValid() && Test.Pacer->GetNumPending() == 0);
+	TestTrue(TEXT("not the actor parked in that frame"), SameFrame.Get() != Actor);
+	TestEqual(TEXT("which stays parked"), Test.Pacer->GetNumParked(Class), 1);
+	return true;
+}
+
+// A full pool destroys the rest of the releases.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolCapTest, "SpawnPacer.Pool.FullPoolDestroysTheRest", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolCapTest::RunTest(const FString& Parameters)
+{
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 2);
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned = SpawnPooled(Test, 3);
+	ReleaseAll(Test, Spawned);
+	int32 Alive = 0;
+	for (const TWeakObjectPtr<ASpawnPacerTestPoolActor>& Actor : Spawned)
+	{
+		Alive += Actor.IsValid() ? 1 : 0;
+	}
+	TestEqual(TEXT("parked up to the cap"), Test.Pacer->GetNumParked(ASpawnPacerTestPoolActor::StaticClass()), 2);
+	TestEqual(TEXT("the third destroyed"), Alive, 2);
+	return true;
+}
+
+// Prewarm fills the pool up to its cap (BeginPlay runs once per object), and the next spawns are served by Acquire jobs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerPoolPrewarmTest, "SpawnPacer.Pool.PrewarmFillsThePool", SpawnPacerTests::Flags)
+bool FSpawnPacerPoolPrewarmTest::RunTest(const FString& Parameters)
+{
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 4);
+	TestEqual(TEXT("clamped to the room in the pool"), Test.Pacer->Prewarm(ASpawnPacerTestPoolActor::StaticClass(), 10), 4);
+	TestTrue(TEXT("drained"), Test.TickUntilIdle());
+	TestEqual(TEXT("parked"), Test.Pacer->GetNumParked(ASpawnPacerTestPoolActor::StaticClass()), 4);
+	TestEqual(TEXT("pre-warm requests completed"), Test.Pacer->GetTotals().Completed, 4);
+
+	const TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Served = SpawnPooled(Test, 4);
+	TestEqual(TEXT("served"), Served.Num(), 4);
+	TestEqual(TEXT("from the pool"), Test.Pacer->GetNumParked(ASpawnPacerTestPoolActor::StaticClass()), 0);
+	for (const TWeakObjectPtr<ASpawnPacerTestPoolActor>& Actor : Served)
+	{
+		if (TestTrue(TEXT("alive"), Actor.IsValid()))
+		{
+			TestEqual(TEXT("BeginPlay once, at pre-warm"), Actor->BeginPlayCalls, 1);
+			TestEqual(TEXT("parked once"), Actor->Released, 1);
+			TestEqual(TEXT("acquired once"), Actor->Acquired, 1);
+		}
+	}
+	return true;
+}
+
+// S8: the reset verifier finds a reflected property a release left changed, and finds nothing after a correct reset.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerVerifierTest, "SpawnPacer.Pool.VerifierFindsAPropertyLeftChanged", SpawnPacerTests::Flags)
+bool FSpawnPacerVerifierTest::RunTest(const FString& Parameters)
+{
+	TArray<int32> LeaksPerAcquire;
+	TArray<FString> Kinds;
+	FTestPacerWorld Test;
+	if (!Test.IsReady(*this))
+	{
+		return false;
+	}
+	Test.Pacer->SetVerifyReset(true);
+	Test.Pacer->SetClassPoolCap(ASpawnPacerTestPoolActor::StaticClass(), 1);
+	Test.Pacer->OnResetVerified.AddLambda([&LeaksPerAcquire, &Kinds](AActor&, const TArray<FSpawnPacerLeak>& Leaks)
+	{
+		LeaksPerAcquire.Add(Leaks.Num());
+		for (const FSpawnPacerLeak& Leak : Leaks)
+		{
+			Kinds.Add(FString(FSpawnPacerResetVerifier::KindName(Leak.Kind)) + TEXT(" ") + Leak.Where);
+		}
+	});
+	TArray<TWeakObjectPtr<ASpawnPacerTestPoolActor>> Spawned = SpawnPooled(Test, 1);
+	if (!TestEqual(TEXT("spawned"), Spawned.Num(), 1))
+	{
+		return false;
+	}
+	ASpawnPacerTestPoolActor* Actor = Spawned[0].Get();
+
+	Actor->Uses = 1;            // used, and reset correctly
+	ReleaseAll(Test, Spawned);
+	SpawnPooled(Test, 1);
+	Actor->Uses = 3;            // used, and the reset is skipped
+	Actor->bResetUses = false;
+	ReleaseAll(Test, Spawned);
+	SpawnPooled(Test, 1);
+
+	for (const FString& Kind : Kinds)
+	{
+		AddInfo(Kind);
+	}
+	if (TestEqual(TEXT("two verified acquires"), LeaksPerAcquire.Num(), 2))
+	{
+		TestEqual(TEXT("a correct reset: no leak"), LeaksPerAcquire[0], 0);
+		TestEqual(TEXT("a skipped reset: exactly that property"), LeaksPerAcquire[1], 1);
+	}
+	TestEqual(TEXT("counted as an actor-property leak"), Test.Pacer->GetResetLeaks(ESpawnPacerLeakKind::ActorProperty), 1);
 	return true;
 }
 

@@ -303,7 +303,7 @@ Blueprint-only actors can be paced and pooled, but only as `Whole` or `Deferred`
 | Step | On `Release` (park) | On `Acquire` (unpark) |
 |---|---|---|
 | 1 | `ISpawnPacerPoolable::OnPoolReleased` (game state) | Restore transform (`ETeleportType::ResetPhysics`) |
-| 2 | Clear timers and latent actions: actor + every component (enforced) | Restore collision and visibility to the fresh state |
+| 2 | Clear timers and latent actions: actor + every component (enforced) | Restore collision and visibility to the fresh state: the class default object's (S7) |
 | 3 | Remember which component ticks were on; switch off actor and component ticks | Restore the remembered ticks |
 | 4 | Disable collision, hide, move to a park location | `ISpawnPacerPoolable::OnPoolAcquired` (game state) |
 | 5 | — | **Verify** (if `sp.Pool.VerifyReset 1`), then the request's `Initialize` callback |
@@ -369,4 +369,8 @@ Blueprint-only actors can be paced and pooled, but only as `Whole` or `Deferred`
 | (S5) `USpawnPacerSubsystem` as a `UTickableWorldSubsystem` | A `UWorldSubsystem` on `OnWorldPostActorTick` | Deterministic order against every other tickable (§4.1) |
 | (S6) Per-component keys learned one name at a time | A **family** prior: an unseen component is predicted from its actor class's other components at the same stage | Without it a boss's 23 held-back parts are 23 cold jobs, each alone in a frame, holding its queue's head for 23 frames (S6 design check, before any run) |
 | (S6) "Hold back native non-root components" | Native non-root **scene** components | Non-scene components have no render or physics state to create; as a family's first sample (the boss's brain) they would make it predict the parts far too low (S6 code review) |
+| (S7) "Restore collision and visibility to the fresh state" | The class default object's collision and visibility | Needs no per-actor snapshot; an actor that hid itself while dying comes back visible (the S7 code review rejected restoring the state at release) |
+| (S7) — | An actor parked in a frame is not acquired in that same frame | Latent removal is applied only at the next latent update (`LatentActionManager.cpp:52–75`, processed at `LevelTick.cpp:1797`, before SpawnPacer's work in the next frame); a new Delay with the same id would otherwise find the stale one and never run |
+| (S7) Pooling set by the settings | `SetClassPoolCap(Class, Cap)` until S9 | As `SetClassRule` for the split mode: the director sets it, the settings feed it later |
+| (S7) "Pre-warm" | `Prewarm(Class, Count)`: spawns that park themselves as soon as they have spawned, Background priority, clamped to the room in the pool | The pool's cost is paid during the warm-up, not the wave; never ahead of a gameplay request |
 | (S5) "Whole: plain `SpawnActor`" | Plain `SpawnActor` without an `Initialize` callback; with one, a deferred spawn finished in the same job | The same engine work (a plain `SpawnActor` is `PostSpawnInitialize` + `FinishSpawning`, `Private/Actor.cpp:4357–4360`), and `Initialize` then means the same thing in both modes: after registration, before the construction script and BeginPlay |
