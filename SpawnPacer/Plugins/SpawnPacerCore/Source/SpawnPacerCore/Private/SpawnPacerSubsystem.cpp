@@ -2,6 +2,8 @@
 
 #include "SpawnPacerSubsystem.h"
 
+#include "Components/ActorComponent.h"
+#include "Components/SceneComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/PlatformTime.h"
@@ -20,6 +22,71 @@ namespace SpawnPacer
 
 	/** A queue is compacted when at least this many ended requests sit before its head and they are most of it. */
 	constexpr int32 CompactAfter = 64;
+
+	/**
+	 * PerComponent, called from CustomPreSpawnInitialization: after NewObject, before PostSpawnInitialize registers
+	 * anything (01b #3). Holds back every native, non-root **scene** component that would register itself, by clearing
+	 * its public bAutoRegister (IncrementalRegisterComponents skips those, Actor.cpp:6235).
+	 *  - All of them, not a choice: the engine registers an unregistered parent before its child only if that parent's
+	 *    own flag is set (GetUnregisteredParent, Actor.cpp:6014-6034), so a held-back parent with an auto-registering
+	 *    child would leave the child registering under an unregistered parent.
+	 *  - Scene components only: they carry the render and physics state that registration creates (01b #6). A non-scene
+	 *    component (the demo's brain) costs almost nothing to register, and as a family's first sample it would make the
+	 *    family predict the heavy parts far too low (S6 code review). It registers in the Construct job as usual.
+	 * Components that don't register themselves are left alone. Returned parent first (by attachment depth).
+	 */
+	void HoldBackComponents(AActor& Actor, TArray<TWeakObjectPtr<UActorComponent>>& OutHeldBack)
+	{
+		const USceneComponent* Root = Actor.GetRootComponent();
+		TInlineComponentArray<USceneComponent*> Components(&Actor);
+		TArray<TPair<int32, USceneComponent*>, TInlineAllocator<32>> ByDepth;
+		for (USceneComponent* Component : Components)
+		{
+			if (Component != Root && Component->bAutoRegister && Component->CreationMethod == EComponentCreationMethod::Native)
+			{
+				int32 Depth = 0;
+				for (const USceneComponent* Scene = Component; Scene->GetAttachParent(); Scene = Scene->GetAttachParent())
+				{
+					++Depth;
+				}
+				Component->bAutoRegister = false;
+				ByDepth.Emplace(Depth, Component);
+			}
+		}
+		ByDepth.StableSort([](const TPair<int32, USceneComponent*>& A, const TPair<int32, USceneComponent*>& B) { return A.Key < B.Key; });
+		OutHeldBack.Reset(ByDepth.Num());
+		for (const TPair<int32, USceneComponent*>& Entry : ByDepth)
+		{
+			OutHeldBack.Add(Entry.Value);
+		}
+	}
+}
+
+void USpawnPacerSubsystem::SkipToNextHeldBack(FSpawnPacerRequest& Request)
+{
+	// A held-back component that is gone, or that something else registered, needs no job: skipping it keeps a near-0 ms
+	// "job" out of the cost model (S6 code review). Its flag is restored all the same.
+	while (Request.NextHeldBack < Request.HeldBack.Num())
+	{
+		UActorComponent* Next = Request.HeldBack[Request.NextHeldBack].Get();
+		if (IsValid(Next) && !Next->IsRegistered())
+		{
+			return;
+		}
+		if (Next)
+		{
+			Next->bAutoRegister = true;
+		}
+		++Request.NextHeldBack;
+	}
+	Request.HeldBack.Reset();
+	Request.NextStage = ESpawnPacerStage::Finish; // none left: BeginPlay may run (01b #4)
+}
+
+bool USpawnPacerSubsystem::IsHalfSpawned(const FSpawnPacerRequest& Request)
+{
+	return Request.Kind == ESpawnPacerRequestKind::Spawn
+		&& (Request.NextStage == ESpawnPacerStage::Register || Request.NextStage == ESpawnPacerStage::Finish);
 }
 
 bool USpawnPacerSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
@@ -83,7 +150,7 @@ bool USpawnPacerSubsystem::RequestSpawn(FSpawnPacerSpawnParams&& Params)
 	}
 	bActive = true;
 	const ESpawnPacerSplitMode* Rule = ClassRules.Find(Params.Class.Get());
-	const bool bDeferred = Rule && *Rule == ESpawnPacerSplitMode::Deferred;
+	const ESpawnPacerSplitMode Mode = Rule ? *Rule : ESpawnPacerSplitMode::Whole;
 
 	FSpawnPacerRequest& Request = Incoming.AddDefaulted_GetRef();
 	Request.Kind = ESpawnPacerRequestKind::Spawn;
@@ -92,7 +159,8 @@ bool USpawnPacerSubsystem::RequestSpawn(FSpawnPacerSpawnParams&& Params)
 	Request.Initialize = MoveTemp(Params.Initialize);
 	Request.OnSpawned = MoveTemp(Params.OnSpawned);
 	Request.BatchId = Params.BatchId;
-	Request.NextStage = bDeferred ? ESpawnPacerStage::Construct : ESpawnPacerStage::Spawn;
+	Request.NextStage = Mode == ESpawnPacerSplitMode::Whole ? ESpawnPacerStage::Spawn : ESpawnPacerStage::Construct;
+	Request.bHoldBackComponents = Mode == ESpawnPacerSplitMode::PerComponent;
 	Request.Priority = Params.Priority;
 	Request.CollisionHandling = Params.CollisionHandling;
 	AddToBatch(Params.BatchId);
@@ -118,7 +186,7 @@ bool USpawnPacerSubsystem::RequestRelease(AActor* Actor, ESpawnPacerPriority Pri
 			continue;
 		}
 		FSpawnPacerRequest& Head = Queue.Requests[Queue.Head];
-		if (&Head != Running && Head.Kind == ESpawnPacerRequestKind::Spawn && Head.NextStage == ESpawnPacerStage::Finish && Head.Actor.Get() == Actor)
+		if (&Head != Running && IsHalfSpawned(Head) && Head.Actor.Get() == Actor)
 		{
 			End(Head, EOutcome::Cancelled); // the spawn ends here, and its batch is told
 			Head.Kind = ESpawnPacerRequestKind::Release;
@@ -127,6 +195,7 @@ bool USpawnPacerSubsystem::RequestRelease(AActor* Actor, ESpawnPacerPriority Pri
 			Head.bCancelled = false;
 			Head.Initialize.Reset();
 			Head.OnSpawned.Reset();
+			Head.HeldBack.Reset(); // destroyed with the actor
 			AddToBatch(BatchId);
 			return true;
 		}
@@ -214,7 +283,7 @@ FSpawnPacerRequest* USpawnPacerSubsystem::FindHead()
 			if (Request.bCancelled)
 			{
 				const bool bSpawn = Request.Kind == ESpawnPacerRequestKind::Spawn;
-				if (bSpawn && Request.NextStage == ESpawnPacerStage::Finish)
+				if (IsHalfSpawned(Request))
 				{
 					Request.NextStage = ESpawnPacerStage::Destroy; // half-spawned: cleaned up by a budgeted Destroy job
 				}
@@ -225,6 +294,10 @@ FSpawnPacerRequest* USpawnPacerSubsystem::FindHead()
 					continue;
 				}
 			}
+			if (Request.NextStage == ESpawnPacerStage::Register)
+			{
+				SkipToNextHeldBack(Request); // something may have changed since its last job
+			}
 			HeadQueue = &Queue;
 			return &Request;
 		}
@@ -233,11 +306,16 @@ FSpawnPacerRequest* USpawnPacerSubsystem::FindHead()
 	return nullptr;
 }
 
-AActor* USpawnPacerSubsystem::Spawn(const FSpawnPacerRequest& Request, bool bDeferConstruction) const
+AActor* USpawnPacerSubsystem::Spawn(FSpawnPacerRequest& Request, bool bDeferConstruction) const
 {
 	FActorSpawnParameters Parameters;
 	Parameters.SpawnCollisionHandlingOverride = Request.CollisionHandling;
 	Parameters.bDeferConstruction = bDeferConstruction;
+	if (Request.bHoldBackComponents && bDeferConstruction)
+	{
+		// Runs inside SpawnActor, before registration (LevelActor.cpp:729-733); the request outlives the call.
+		Parameters.CustomPreSpawnInitialization = [&Request](AActor* Actor) { SpawnPacer::HoldBackComponents(*Actor, Request.HeldBack); };
+	}
 	return GetWorld()->SpawnActor(Request.Class, &Request.Transform, Parameters);
 }
 
@@ -299,8 +377,27 @@ bool USpawnPacerSubsystem::RunStage(FSpawnPacerRequest& Request)
 		{
 			Request.Initialize(*Actor);
 		}
-		Request.NextStage = ESpawnPacerStage::Finish;
-		return false; // stays at the head: its Finish job comes next (or, if cancelled meanwhile, a Destroy job)
+		Request.NextHeldBack = 0;
+		Request.NextStage = ESpawnPacerStage::Register;
+		SkipToNextHeldBack(Request); // nothing held back (not PerComponent, or nothing to hold): straight to Finish
+		return false; // stays at the head: its next job comes next (or, if cancelled meanwhile, a Destroy job)
+	}
+
+	case ESpawnPacerStage::Register:
+	{
+		// One held-back component, parent first; Finish only once none is left (02 section 8, 01b #4).
+		if (!IsValid(Request.Actor.Get()))
+		{
+			End(Request, EOutcome::Dropped);
+			return true;
+		}
+		// FindHead has skipped entries that are gone or already registered, so this one is valid and unregistered.
+		UActorComponent* Component = Request.HeldBack[Request.NextHeldBack].Get();
+		Component->bAutoRegister = true; // restored, so a later re-registration (level streaming) includes it
+		Component->RegisterComponent();
+		++Request.NextHeldBack;
+		SkipToNextHeldBack(Request); // the last one sets Finish
+		return false;
 	}
 
 	case ESpawnPacerStage::Finish:
@@ -331,7 +428,7 @@ bool USpawnPacerSubsystem::RunStage(FSpawnPacerRequest& Request)
 	}
 
 	default:
-		checkNoEntry(); // Register, Acquire and Release come with S6 and S7
+		checkNoEntry(); // Acquire and Release come with S7
 		End(Request, EOutcome::Dropped);
 		return true;
 	}
@@ -367,7 +464,15 @@ void USpawnPacerSubsystem::RunFrame()
 		[this]() -> TOptional<FSpawnCostKey>
 		{
 			const FSpawnPacerRequest* Head = FindHead();
-			return Head ? TOptional<FSpawnCostKey>(FSpawnCostKey{ Head->Class.Get(), Head->NextStage, NAME_None }) : TOptional<FSpawnCostKey>();
+			if (!Head)
+			{
+				return {};
+			}
+			// A Register job is keyed by the component's name (the same in every instance of the class, 02 section 4.1);
+			// an unseen name is predicted from its family (S6, SpawnCostModel.h). FindHead guarantees it is valid.
+			const FName Component = Head->NextStage == ESpawnPacerStage::Register
+				? Head->HeldBack[Head->NextHeldBack]->GetFName() : NAME_None;
+			return FSpawnCostKey{ Head->Class.Get(), Head->NextStage, Component };
 		},
 		[this]() -> double
 		{
@@ -431,6 +536,7 @@ void USpawnPacerSubsystem::RunFrame()
 	CSV_CUSTOM_STAT(SpawnPacer, Cancelled, Frame.Cancelled, ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, SpawnMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Spawn)], ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, ConstructMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Construct)], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(SpawnPacer, RegisterMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Register)], ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, FinishMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Finish)], ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(SpawnPacer, DestroyMs, Frame.StageMs[static_cast<int32>(ESpawnPacerStage::Destroy)], ECsvCustomStatOp::Set);
 

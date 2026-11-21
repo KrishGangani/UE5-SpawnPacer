@@ -26,9 +26,14 @@ enum class ESpawnPacerPriority : uint8
 UENUM(BlueprintType)
 enum class ESpawnPacerSplitMode : uint8
 {
-	Whole,     // one Spawn job: SpawnActor, everything in one go
-	Deferred   // a Construct job (SpawnActor deferred: construction + native registration), then a Finish job
-	           // (FinishSpawning: construction script, initialisation, BeginPlay), possibly in a later frame
+	Whole,       // one Spawn job: SpawnActor, everything in one go
+	Deferred,    // a Construct job (SpawnActor deferred: construction + native registration), then a Finish job
+	             // (FinishSpawning: construction script, initialisation, BeginPlay), possibly in a later frame
+	PerComponent // like Deferred, but the native non-root scene components are held back from the Construct job and
+	             // registered one per Register job (parent first), all before the Finish job (01b #3, #4). Limits:
+	             // native components only (a Blueprint's construction-script components are made inside Finish,
+	             // 01b #5); and AActor::PostRegisterAllComponents runs in the Construct job, before the held-back
+	             // components register, so a class that reads its parts there must stay Whole or Deferred
 };
 
 /** One spawn request. Moved into the subsystem by RequestSpawn. */
@@ -45,7 +50,8 @@ struct FSpawnPacerSpawnParams
 	ESpawnActorCollisionHandlingMethod CollisionHandling = ESpawnActorCollisionHandlingMethod::Undefined;
 
 	/** Optional: after construction and native component registration, before the construction script and BeginPlay
-	 *  (the moment deferred spawning exists for). In both split modes. */
+	 *  (the moment deferred spawning exists for). In every split mode; in PerComponent, the held-back components are
+	 *  not registered yet when it runs. */
 	TFunction<void(AActor&)> Initialize;
 
 	/** Optional: once the actor has finished spawning (and begun play, if the world has). Not called for a request that
@@ -80,6 +86,10 @@ struct FSpawnPacerRequest
 	/** Weak: anything may destroy the actor between two of its stages. */
 	TWeakObjectPtr<AActor> Actor;
 
+	/** PerComponent: the components held back from registration, parent first; NextHeldBack is the next to register. */
+	TArray<TWeakObjectPtr<UActorComponent>> HeldBack;
+	int32 NextHeldBack = 0;
+
 	FTransform Transform;
 	TFunction<void(AActor&)> Initialize;
 	TFunction<void(AActor&)> OnSpawned;
@@ -88,6 +98,9 @@ struct FSpawnPacerRequest
 	ESpawnPacerStage NextStage = ESpawnPacerStage::Spawn;
 	ESpawnPacerPriority Priority = ESpawnPacerPriority::Normal;
 	ESpawnActorCollisionHandlingMethod CollisionHandling = ESpawnActorCollisionHandlingMethod::Undefined;
+
+	/** PerComponent: hold the native components back in the Construct job. */
+	bool bHoldBackComponents = false;
 
 	/** CancelBatch was called. Resolved when the request reaches the head (USpawnPacerSubsystem::FindHead). */
 	bool bCancelled = false;
@@ -198,7 +211,14 @@ private:
 	/** Does the head request's next stage. Returns true when the request has ended. */
 	bool RunStage(FSpawnPacerRequest& Request);
 
-	AActor* Spawn(const FSpawnPacerRequest& Request, bool bDeferConstruction) const;
+	/** SpawnActor with the request's parameters; for a PerComponent request, holds its components back (HeldBack). */
+	AActor* Spawn(FSpawnPacerRequest& Request, bool bDeferConstruction) const;
+
+	/** A spawn constructed but not finished: its actor exists and is waiting for Register or Finish jobs. */
+	static bool IsHalfSpawned(const FSpawnPacerRequest& Request);
+
+	/** Moves NextHeldBack past components that are gone or already registered; with none left, the next job is Finish. */
+	static void SkipToNextHeldBack(FSpawnPacerRequest& Request);
 
 	/** Ends a request: counts its outcome and its batch. */
 	void End(const FSpawnPacerRequest& Request, EOutcome Outcome);

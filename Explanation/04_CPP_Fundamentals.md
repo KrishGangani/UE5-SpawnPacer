@@ -198,3 +198,24 @@ FModel M = 3.0;   // error with explicit; without it, a double would quietly bec
 ```
 - `explicit` stops a one-argument constructor from acting as an implicit conversion.
 - **In our code:** `FSpawnCostModel(double InDeviationMultiplier = 2.0)` is `explicit`; `Alpha` and `Beta` are `static constexpr`, with RFC 6298's wording next to them.
+
+## Added in step S6
+
+## 19. `static` functions in a `.cpp`, and file-local helpers
+
+```cpp
+static TOptional<EMode> ParseMode(const FString& Name) { … }   // visible in this .cpp only (internal linkage)
+namespace SpawnPacer { void HoldBackComponents(AActor&, …); }   // a named namespace: a scope, still linkable
+```
+- `static` on a free function gives it **internal linkage**: the linker never sees it outside this file, so another file may use the same name. A header only declares what other files need.
+- **In our code:** the director's `ParseSplitMode` is file-local (the header would otherwise need the plugin's enum); the subsystem's `HoldBackComponents` lives in the `.cpp`'s `SpawnPacer` namespace next to the constants it uses.
+
+## 20. Sorting with a comparison: `StableSort` and pairs
+
+```cpp
+TArray<TPair<int32, USceneComponent*>> ByDepth;   // (attachment depth, component)
+ByDepth.StableSort([](const auto& A, const auto& B) { return A.Key < B.Key; });
+```
+- A **stable** sort keeps equal elements in their original order. Two parts at the same depth keep the order the engine lists them in, so the order is deterministic.
+- `TPair<K, V>` holds two values, `.Key` and `.Value`, like `std::pair`'s `first` and `second`.
+- **In our code:** held-back components sorted parent first (05 G2).

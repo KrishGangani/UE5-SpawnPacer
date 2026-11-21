@@ -62,11 +62,12 @@ namespace SpawnPacerSubsystemTests
 			return Pacer->GetNumPending() == 0;
 		}
 
-		/** A request for the test actor at Location; AlwaysSpawn, so overlapping test actors are never refused. */
-		static FSpawnPacerSpawnParams Request(int32 BatchId = INDEX_NONE, const FVector& Location = FVector::ZeroVector)
+		/** A request for a test actor at Location; AlwaysSpawn, so overlapping test actors are never refused. */
+		static FSpawnPacerSpawnParams Request(int32 BatchId = INDEX_NONE, const FVector& Location = FVector::ZeroVector,
+			TSubclassOf<ASpawnPacerTestActor> Class = ASpawnPacerTestActor::StaticClass())
 		{
 			FSpawnPacerSpawnParams Params;
-			Params.Class = ASpawnPacerTestActor::StaticClass();
+			Params.Class = Class;
 			Params.Transform = FTransform(Location);
 			Params.BatchId = BatchId;
 			Params.CollisionHandling = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -87,20 +88,32 @@ namespace SpawnPacerSubsystemTests
 		int32 Count(int32 BatchId) const { return Completions.FindRef(BatchId); }
 	};
 
-	const TCHAR* ModeName(ESpawnPacerSplitMode Mode)
+	FString ModeName(ESpawnPacerSplitMode Mode)
 	{
-		return Mode == ESpawnPacerSplitMode::Whole ? TEXT("Whole") : TEXT("Deferred");
+		return StaticEnum<ESpawnPacerSplitMode>()->GetNameStringByValue(static_cast<int64>(Mode));
+	}
+
+	/** Components of an actor that are registered now. */
+	int32 CountRegistered(const AActor& Actor)
+	{
+		TInlineComponentArray<UActorComponent*> Components(&Actor);
+		int32 Registered = 0;
+		for (const UActorComponent* Component : Components)
+		{
+			Registered += Component->IsRegistered() ? 1 : 0;
+		}
+		return Registered;
 	}
 }
 
 using namespace SpawnPacerSubsystemTests;
 
-// Both split modes spawn every request once, at its transform, with Initialize before BeginPlay; the batch completes once.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemSpawnTest, "SpawnPacer.Subsystem.EveryRequestSpawnsOnceInBothModes", SpawnPacerTests::Flags)
+// Every split mode spawns every request once, at its transform, with Initialize before BeginPlay; the batch completes once.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemSpawnTest, "SpawnPacer.Subsystem.EveryRequestSpawnsOnceInEveryMode", SpawnPacerTests::Flags)
 bool FSpawnPacerSubsystemSpawnTest::RunTest(const FString& Parameters)
 {
 	constexpr int32 Count = 20;
-	for (const ESpawnPacerSplitMode Mode : { ESpawnPacerSplitMode::Whole, ESpawnPacerSplitMode::Deferred })
+	for (const ESpawnPacerSplitMode Mode : { ESpawnPacerSplitMode::Whole, ESpawnPacerSplitMode::Deferred, ESpawnPacerSplitMode::PerComponent })
 	{
 		TArray<TWeakObjectPtr<ASpawnPacerTestActor>> Spawned;
 		FBatchLog Batches;
@@ -110,12 +123,13 @@ bool FSpawnPacerSubsystemSpawnTest::RunTest(const FString& Parameters)
 			return false;
 		}
 		const FString Name = ModeName(Mode);
-		Test.Pacer->SetClassRule(ASpawnPacerTestActor::StaticClass(), Mode);
+		Test.Pacer->SetClassRule(ASpawnPacerTestPartsActor::StaticClass(), Mode);
 		Batches.Listen(*Test.Pacer);
 		const int32 Batch = Test.Pacer->CreateBatch();
 		for (int32 Index = 0; Index < Count; ++Index)
 		{
-			FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(Batch, FVector(100.0 * Index, 0.0, 0.0));
+			// The parts actor, so PerComponent really runs Register jobs (S6 code review).
+			FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(Batch, FVector(100.0 * Index, 0.0, 0.0), ASpawnPacerTestPartsActor::StaticClass());
 			Params.Initialize = [](AActor& Actor) { CastChecked<ASpawnPacerTestActor>(&Actor)->bInitialized = true; };
 			Params.OnSpawned = [&Spawned](AActor& Actor) { Spawned.Add(CastChecked<ASpawnPacerTestActor>(&Actor)); };
 			Test.Pacer->RequestSpawn(MoveTemp(Params));
@@ -143,41 +157,135 @@ bool FSpawnPacerSubsystemSpawnTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// 02 section 8: an actor destroyed between Construct and Finish is dropped and counted, never finished.
+// 02 section 8: an actor destroyed between its stages (before Finish, or between two Register jobs) is dropped and counted,
+// never finished.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemDestroyedBetweenStagesTest, "SpawnPacer.Subsystem.ActorDestroyedBetweenStagesIsDropped", SpawnPacerTests::Flags)
 bool FSpawnPacerSubsystemDestroyedBetweenStagesTest::RunTest(const FString& Parameters)
 {
-	TWeakObjectPtr<AActor> Constructed;
-	int32 SpawnedCalls = 0;
-	FBatchLog Batches;
+	for (const ESpawnPacerSplitMode Mode : { ESpawnPacerSplitMode::Deferred, ESpawnPacerSplitMode::PerComponent })
+	{
+		TWeakObjectPtr<AActor> Constructed;
+		int32 SpawnedCalls = 0;
+		FBatchLog Batches;
+		FTestPacerWorld Test;
+		if (!Test.IsReady(*this))
+		{
+			return false;
+		}
+		const FString Name = ModeName(Mode);
+		Test.Pacer->SetClassRule(ASpawnPacerTestPartsActor::StaticClass(), Mode);
+		Batches.Listen(*Test.Pacer);
+		const int32 Batch = Test.Pacer->CreateBatch();
+		FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(Batch, FVector::ZeroVector, ASpawnPacerTestPartsActor::StaticClass());
+		Params.Initialize = [&Constructed](AActor& Actor) { Constructed = &Actor; };
+		Params.OnSpawned = [&SpawnedCalls](AActor&) { ++SpawnedCalls; };
+		Test.Pacer->RequestSpawn(MoveTemp(Params));
+
+		// Frame 1: the Construct job runs (cold, but the frame's first job); its next job (Finish, or the first Register)
+		// is cold too, so it waits.
+		Test.Tick();
+		if (!TestTrue(Name + TEXT(": constructed after one frame"), Constructed.IsValid()))
+		{
+			return false;
+		}
+		TestFalse(Name + TEXT(": not begun play yet"), Constructed->HasActorBegunPlay());
+		TestEqual(Name + TEXT(": still pending"), Test.Pacer->GetNumPending(), 1);
+
+		Constructed->Destroy(); // behind SpawnPacer's back
+		TestTrue(Name + TEXT(": queue drained"), Test.TickUntilIdle());
+		TestEqual(Name + TEXT(": dropped"), Test.Pacer->GetTotals().Dropped, 1);
+		TestEqual(Name + TEXT(": completed"), Test.Pacer->GetTotals().Completed, 0);
+		TestEqual(Name + TEXT(": OnSpawned not called"), SpawnedCalls, 0);
+		TestEqual(Name + TEXT(": batch complete once"), Batches.Count(Batch), 1);
+	}
+	return true;
+}
+
+// S6: a per-component spawn shows BeginPlay exactly what a whole spawn shows: every component that registers itself is
+// registered, the dormant one isn't, the parts stand where they should, and the held-back flags are restored.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemPerComponentEquivalenceTest, "SpawnPacer.Subsystem.PerComponentBeginPlaySeesEveryComponent", SpawnPacerTests::Flags)
+bool FSpawnPacerSubsystemPerComponentEquivalenceTest::RunTest(const FString& Parameters)
+{
+	const FVector Location(300.0, 200.0, 100.0);
+	TMap<ESpawnPacerSplitMode, int32> RegisteredAtBeginPlay;
+	for (const ESpawnPacerSplitMode Mode : { ESpawnPacerSplitMode::Whole, ESpawnPacerSplitMode::PerComponent })
+	{
+		TWeakObjectPtr<ASpawnPacerTestPartsActor> Spawned;
+		FTestPacerWorld Test;
+		if (!Test.IsReady(*this))
+		{
+			return false;
+		}
+		const FString Name = ModeName(Mode);
+		Test.Pacer->SetClassRule(ASpawnPacerTestPartsActor::StaticClass(), Mode);
+		FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(INDEX_NONE, Location, ASpawnPacerTestPartsActor::StaticClass());
+		Params.OnSpawned = [&Spawned](AActor& Actor) { Spawned = CastChecked<ASpawnPacerTestPartsActor>(&Actor); };
+		Test.Pacer->RequestSpawn(MoveTemp(Params));
+		TestTrue(Name + TEXT(": queue drained"), Test.TickUntilIdle());
+
+		const ASpawnPacerTestPartsActor* Actor = Spawned.Get();
+		if (!TestNotNull(Name + TEXT(": spawned"), Actor))
+		{
+			return false;
+		}
+		RegisteredAtBeginPlay.Add(Mode, Actor->RegisteredAtBeginPlay);
+		TestEqual(Name + TEXT(": BeginPlay saw root, PartA, PartB and Extra registered"), Actor->RegisteredAtBeginPlay, 4);
+		TestFalse(Name + TEXT(": the dormant part stays unregistered"), Actor->Dormant->IsRegistered());
+		TestFalse(Name + TEXT(": and keeps its own flag"), static_cast<bool>(Actor->Dormant->bAutoRegister));
+		TestTrue(Name + TEXT(": PartA's flag restored"), static_cast<bool>(Actor->PartA->bAutoRegister));
+		TestTrue(Name + TEXT(": PartB's flag restored"), static_cast<bool>(Actor->PartB->bAutoRegister));
+		TestTrue(Name + TEXT(": Extra's flag restored"), static_cast<bool>(Actor->Extra->bAutoRegister));
+		TestEqual(Name + TEXT(": PartB placed through its parent"), Actor->PartB->GetComponentLocation(),
+			Location + ASpawnPacerTestPartsActor::PartAOffset + ASpawnPacerTestPartsActor::PartBOffset);
+	}
+	TestEqual(TEXT("the same in both modes"), RegisteredAtBeginPlay.FindRef(ESpawnPacerSplitMode::PerComponent),
+		RegisteredAtBeginPlay.FindRef(ESpawnPacerSplitMode::Whole));
+	return true;
+}
+
+// S6: one Register job per held-back scene component, parent before child, and Finish only after the last one. The
+// jobs are counted from the frame stats rather than assumed one per frame (S6 code review: a job that measures 0 ms
+// lets a second one in even at budget 0).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemPerComponentOrderTest, "SpawnPacer.Subsystem.PerComponentRegistersOneComponentPerJob", SpawnPacerTests::Flags)
+bool FSpawnPacerSubsystemPerComponentOrderTest::RunTest(const FString& Parameters)
+{
+	TWeakObjectPtr<ASpawnPacerTestPartsActor> Constructed;
 	FTestPacerWorld Test;
 	if (!Test.IsReady(*this))
 	{
 		return false;
 	}
-	Test.Pacer->SetClassRule(ASpawnPacerTestActor::StaticClass(), ESpawnPacerSplitMode::Deferred);
-	Batches.Listen(*Test.Pacer);
-	const int32 Batch = Test.Pacer->CreateBatch();
-	FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(Batch);
-	Params.Initialize = [&Constructed](AActor& Actor) { Constructed = &Actor; };
-	Params.OnSpawned = [&SpawnedCalls](AActor&) { ++SpawnedCalls; };
+	Test.Pacer->SetBudgetMs(0.0);
+	Test.Pacer->SetClassRule(ASpawnPacerTestPartsActor::StaticClass(), ESpawnPacerSplitMode::PerComponent);
+	FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(INDEX_NONE, FVector::ZeroVector, ASpawnPacerTestPartsActor::StaticClass());
+	Params.Initialize = [&Constructed](AActor& Actor) { Constructed = CastChecked<ASpawnPacerTestPartsActor>(&Actor); };
 	Test.Pacer->RequestSpawn(MoveTemp(Params));
 
-	// Frame 1: the Construct job runs (cold, but the frame's first job); the Finish job is cold too, so it waits.
-	Test.Tick();
-	if (!TestTrue(TEXT("constructed after one frame"), Constructed.IsValid()))
+	Test.Tick(); // the Construct job is cold, so it runs alone
+	const ASpawnPacerTestPartsActor* Actor = Constructed.Get();
+	if (!TestNotNull(TEXT("constructed"), Actor))
 	{
 		return false;
 	}
-	TestFalse(TEXT("not begun play yet"), Constructed->HasActorBegunPlay());
-	TestEqual(TEXT("still pending"), Test.Pacer->GetNumPending(), 1);
-
-	Constructed->Destroy(); // behind SpawnPacer's back
-	TestTrue(TEXT("queue drained"), Test.TickUntilIdle());
-	TestEqual(TEXT("dropped"), Test.Pacer->GetTotals().Dropped, 1);
-	TestEqual(TEXT("completed"), Test.Pacer->GetTotals().Completed, 0);
-	TestEqual(TEXT("OnSpawned not called"), SpawnedCalls, 0);
-	TestEqual(TEXT("batch complete once"), Batches.Count(Batch), 1);
+	// The root and the non-scene Extra register in the Construct job; PartA and PartB are held back.
+	TestEqual(TEXT("after Construct: root and Extra"), CountRegistered(*Actor), 2);
+	TestFalse(TEXT("PartA held back"), Actor->PartA->IsRegistered());
+	TestFalse(TEXT("PartB held back"), Actor->PartB->IsRegistered());
+	int32 Jobs = Test.Pacer->GetLastFrameStats().Jobs;
+	bool bParentFirst = true;
+	bool bNoBeginPlayWhileHeldBack = true;
+	for (int32 Frame = 0; Frame < MaxFrames && Test.Pacer->GetNumPending() > 0; ++Frame)
+	{
+		Test.Tick();
+		Jobs += Test.Pacer->GetLastFrameStats().Jobs;
+		bParentFirst &= !Actor->PartB->IsRegistered() || Actor->PartA->IsRegistered();
+		bNoBeginPlayWhileHeldBack &= !Actor->HasActorBegunPlay() || (Actor->PartA->IsRegistered() && Actor->PartB->IsRegistered());
+	}
+	TestEqual(TEXT("jobs: Construct + one Register per held-back part + Finish"), Jobs, 4);
+	TestTrue(TEXT("parent before child"), bParentFirst);
+	TestTrue(TEXT("no BeginPlay while a part is held back"), bNoBeginPlayWhileHeldBack);
+	TestTrue(TEXT("begun play"), Actor->HasActorBegunPlay());
+	TestEqual(TEXT("BeginPlay saw every component"), Actor->RegisteredAtBeginPlay, 4);
 	return true;
 }
 
@@ -347,37 +455,41 @@ bool FSpawnPacerSubsystemCancelFromInitializeTest::RunTest(const FString& Parame
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerSubsystemReleaseHalfSpawnedTest, "SpawnPacer.Subsystem.ReleaseOfAHalfSpawnedActor", SpawnPacerTests::Flags)
 bool FSpawnPacerSubsystemReleaseHalfSpawnedTest::RunTest(const FString& Parameters)
 {
-	TWeakObjectPtr<AActor> Constructed;
-	int32 SpawnedCalls = 0;
-	FBatchLog Batches;
-	FTestPacerWorld Test;
-	if (!Test.IsReady(*this))
+	for (const ESpawnPacerSplitMode Mode : { ESpawnPacerSplitMode::Deferred, ESpawnPacerSplitMode::PerComponent })
 	{
-		return false;
-	}
-	Test.Pacer->SetClassRule(ASpawnPacerTestActor::StaticClass(), ESpawnPacerSplitMode::Deferred);
-	Batches.Listen(*Test.Pacer);
-	const int32 SpawnBatch = Test.Pacer->CreateBatch();
-	FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(SpawnBatch);
-	Params.Initialize = [&Constructed](AActor& Actor) { Constructed = &Actor; };
-	Params.OnSpawned = [&SpawnedCalls](AActor&) { ++SpawnedCalls; };
-	Test.Pacer->RequestSpawn(MoveTemp(Params));
-	Test.Tick(); // Construct only (its Finish job is cold)
-	if (!TestTrue(TEXT("half-spawned"), Constructed.IsValid() && !Constructed->HasActorBegunPlay()))
-	{
-		return false;
-	}
+		TWeakObjectPtr<AActor> Constructed;
+		int32 SpawnedCalls = 0;
+		FBatchLog Batches;
+		FTestPacerWorld Test;
+		if (!Test.IsReady(*this))
+		{
+			return false;
+		}
+		const FString Name = ModeName(Mode);
+		Test.Pacer->SetClassRule(ASpawnPacerTestPartsActor::StaticClass(), Mode);
+		Batches.Listen(*Test.Pacer);
+		const int32 SpawnBatch = Test.Pacer->CreateBatch();
+		FSpawnPacerSpawnParams Params = FTestPacerWorld::Request(SpawnBatch, FVector::ZeroVector, ASpawnPacerTestPartsActor::StaticClass());
+		Params.Initialize = [&Constructed](AActor& Actor) { Constructed = &Actor; };
+		Params.OnSpawned = [&SpawnedCalls](AActor&) { ++SpawnedCalls; };
+		Test.Pacer->RequestSpawn(MoveTemp(Params));
+		Test.Tick(); // Construct only (its next job is cold)
+		if (!TestTrue(Name + TEXT(": half-spawned"), Constructed.IsValid() && !Constructed->HasActorBegunPlay()))
+		{
+			return false;
+		}
 
-	const int32 ReleaseBatch = Test.Pacer->CreateBatch();
-	TestTrue(TEXT("release accepted"), Test.Pacer->RequestRelease(Constructed.Get(), ESpawnPacerPriority::Normal, ReleaseBatch));
-	TestEqual(TEXT("still one request: the spawn became the release"), Test.Pacer->GetNumPending(), 1);
-	TestTrue(TEXT("queue drained"), Test.TickUntilIdle());
-	TestFalse(TEXT("destroyed"), Constructed.IsValid());
-	TestEqual(TEXT("never finished: OnSpawned not called"), SpawnedCalls, 0);
-	TestEqual(TEXT("the spawn is cancelled"), Test.Pacer->GetTotals().Cancelled, 1);
-	TestEqual(TEXT("the release is completed"), Test.Pacer->GetTotals().Completed, 1);
-	TestEqual(TEXT("spawn batch complete once"), Batches.Count(SpawnBatch), 1);
-	TestEqual(TEXT("release batch complete once"), Batches.Count(ReleaseBatch), 1);
+		const int32 ReleaseBatch = Test.Pacer->CreateBatch();
+		TestTrue(Name + TEXT(": release accepted"), Test.Pacer->RequestRelease(Constructed.Get(), ESpawnPacerPriority::Normal, ReleaseBatch));
+		TestEqual(Name + TEXT(": still one request: the spawn became the release"), Test.Pacer->GetNumPending(), 1);
+		TestTrue(Name + TEXT(": queue drained"), Test.TickUntilIdle());
+		TestFalse(Name + TEXT(": destroyed"), Constructed.IsValid());
+		TestEqual(Name + TEXT(": never finished: OnSpawned not called"), SpawnedCalls, 0);
+		TestEqual(Name + TEXT(": the spawn is cancelled"), Test.Pacer->GetTotals().Cancelled, 1);
+		TestEqual(Name + TEXT(": the release is completed"), Test.Pacer->GetTotals().Completed, 1);
+		TestEqual(Name + TEXT(": spawn batch complete once"), Batches.Count(SpawnBatch), 1);
+		TestEqual(Name + TEXT(": release batch complete once"), Batches.Count(ReleaseBatch), 1);
+	}
 	return true;
 }
 

@@ -97,3 +97,16 @@
 | ⚠ caught: **an idle system that still publishes** | A baseline run's summary shows another spawner's numbers | Publish nothing until first use; analyse each configuration's own column | Open a baseline capture and look for `SpawnPacer/*` columns |
 | ⚠ caught: **"the last record" as the owner of an asynchronous result** | A slow completion is written to the next cycle's record | Keep the id on the record it belongs to and look it up | Shorten the cycle until the despawn overlaps the next wave |
 | **Different spawn parameters for different spawners** | One configuration's actors are moved or refused on collision | The director gives SpawnPacer exactly the baselines' parameters (`AlwaysSpawn`) | Compare actor counts and positions between configurations |
+
+## Per-component split (step S6)
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| ⚠ caught before any run: **one cold key per component** | The first split actor of a session stalls its queue for as many frames as it has parts | A family prior: an unseen part is predicted from its class's other parts (05 G1) | `ColdJobs` per frame in the first wave |
+| ⚠ caught: **a comment that states engine behaviour from memory** | The code is right for the wrong reason, and the next edit breaks it | Read the function the comment cites (`GetUnregisteredParent`, 06 §28) | Grep the engine for the function and read its condition |
+| ⚠ caught: **a cheap job as a family's first sample** | The heavy parts that follow are predicted far too low and overrun | Hold back only components with real registration work (scene components) | Compare a family's first sample with its later mean |
+| ⚠ caught: **a test that "covers" a mode without reaching its code** | A PerComponent bug passes the spawn test | Use an actor that has something to hold back | Count `Register` jobs in the test |
+| ⚠ caught: **assuming budget 0 means one job per frame** | An intermittent test failure | Count the jobs from the frame stats | Run the test many times |
+| ⚠ caught: **accepting the `_MAX` entry of a reflected enum** | A bogus mode runs as another and is recorded as itself | Bound the parsed value to the real enumerators (06 §29) | Pass `-SPBossSplit=ESpawnPacerSplitMode_MAX` |
+| **Registering a held-back component after BeginPlay** | The actor's BeginPlay doesn't see the part | `Finish` only when nothing is held back (02 §8) | The test `PerComponentBeginPlaySeesEveryComponent` |
+| **Reading parts in `PostRegisterAllComponents` with PerComponent** | Cached state from parts that weren't registered yet | Keep such a class Whole or Deferred (02 §13) | Log the registered count there |

@@ -1,7 +1,8 @@
-// SpawnPacerCore - ASpawnPacerTestActor.
+// SpawnPacerCore - ASpawnPacerTestActor, ASpawnPacerTestPartsActor.
 
 #include "Tests/SpawnPacerTestTypes.h"
 
+#include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SpawnPacerTestTypes)
@@ -14,6 +15,14 @@ ASpawnPacerTestActor::ASpawnPacerTestActor()
 
 void ASpawnPacerTestActor::BeginPlay()
 {
+	// Counted before Super: what the actor's BeginPlay (and its components') sees.
+	TInlineComponentArray<UActorComponent*> Components(this);
+	RegisteredAtBeginPlay = 0;
+	for (const UActorComponent* Component : Components)
+	{
+		RegisteredAtBeginPlay += Component->IsRegistered() ? 1 : 0;
+	}
+
 	Super::BeginPlay();
 	++BeginPlayCalls;
 	bInitializedAtBeginPlay = bInitialized;
@@ -21,4 +30,24 @@ void ASpawnPacerTestActor::BeginPlay()
 	{
 		OnBeginPlay(*this);
 	}
+}
+
+const FVector ASpawnPacerTestPartsActor::PartAOffset(100.0, 0.0, 0.0);
+const FVector ASpawnPacerTestPartsActor::PartBOffset(0.0, 50.0, 0.0);
+
+ASpawnPacerTestPartsActor::ASpawnPacerTestPartsActor()
+{
+	PartA = CreateDefaultSubobject<USceneComponent>(TEXT("PartA"));
+	PartA->SetupAttachment(RootComponent);
+	PartA->SetRelativeLocation(PartAOffset);
+
+	PartB = CreateDefaultSubobject<USceneComponent>(TEXT("PartB"));
+	PartB->SetupAttachment(PartA);
+	PartB->SetRelativeLocation(PartBOffset);
+
+	Extra = CreateDefaultSubobject<USpawnPacerTestComponent>(TEXT("Extra"));
+
+	Dormant = CreateDefaultSubobject<USceneComponent>(TEXT("Dormant"));
+	Dormant->SetupAttachment(RootComponent);
+	Dormant->bAutoRegister = false;
 }

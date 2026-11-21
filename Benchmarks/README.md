@@ -54,6 +54,8 @@ Warm-up:           5 s (pool fill for B3/SPP)     Capture: 3 wave cycles x 12 s 
 
 | Batch | Configs | Runs | Purpose | Summary |
 |---|---|---|---|---|
+| `2026-11-21_090236_split_balanced` | SPS with the boss PerComponent, Deferred, Whole; at 2 ms and 1 ms | 6 each + priming | **The split ablation** (09 S6): the split matters only at 1 ms (81 forced frames whole, 8–9 split); PerComponent buys nothing over Deferred for this boss | [summary](Summaries/2026-11-21_090236_split_balanced_summary.md) |
+| `2026-11-21_081704_split` | The same six | 4 each + priming | **Superseded:** unbalanced rotation (4 runs for 6 configurations); re-run as `split_balanced` | [summary](Summaries/2026-11-21_081704_split_summary.md) |
 | `2026-11-21_061433_sps_first` | SPS (budget 2 ms; grunts and bosses Deferred) | 1 + priming | **The first SpawnPacer run** (09 S5): SC1 met; SC3 2 of 152 spawn frames over 1.1 × budget; latency 47–55 frames | [summary](Summaries/2026-11-21_061433_sps_first_summary.md) |
 | `2026-11-21_035912_baseline` | B0, B1 (K = 14), B2 (2 ms), B3; work 20000 | 4 each + priming | **The baseline matrix** SpawnPacer must beat, captured before SpawnPacer code existed (09 S3) | [summary](Summaries/2026-11-21_035912_baseline_summary.md) |
 | `2026-11-21_040413_spawntimer` | B0 with `-SPSpawnTimer` | 1 | The engine's per-class spawn time (H2), in the run's log | [summary](Summaries/2026-11-21_040413_spawntimer_summary.md) |

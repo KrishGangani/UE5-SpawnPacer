@@ -2,13 +2,31 @@
 
 #include "SpawnCostModel.h"
 
+const FSpawnCostModel::FEstimate* FSpawnCostModel::Lookup(const FSpawnCostKey& Key) const
+{
+	if (const FEstimate* Estimate = Estimates.Find(Key))
+	{
+		return Estimate;
+	}
+	return Key.Component.IsNone() ? nullptr : Estimates.Find(FamilyOf(Key));
+}
+
 double FSpawnCostModel::Predict(const FSpawnCostKey& Key, double ColdPredictionMs) const
 {
-	const FEstimate* Estimate = Estimates.Find(Key);
+	const FEstimate* Estimate = Lookup(Key);
 	return Estimate ? Estimate->MeanMs + DeviationMultiplier * Estimate->DeviationMs : ColdPredictionMs;
 }
 
 void FSpawnCostModel::Observe(const FSpawnCostKey& Key, double MeasuredMs)
+{
+	ObserveOne(Key, MeasuredMs);
+	if (!Key.Component.IsNone())
+	{
+		ObserveOne(FamilyOf(Key), MeasuredMs); // the family learns from every one of its components (S6)
+	}
+}
+
+void FSpawnCostModel::ObserveOne(const FSpawnCostKey& Key, double MeasuredMs)
 {
 	FEstimate* Estimate = Estimates.Find(Key);
 	if (!Estimate)

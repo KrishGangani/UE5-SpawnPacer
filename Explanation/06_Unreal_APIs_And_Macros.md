@@ -375,3 +375,44 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 6. **Common mistakes.** Callbacks that write to locals declared **after** the wrapper (the world, and its callbacks, outlive them); keeping raw pointers to actors across ticks (a tick may run garbage collection).
 7. **Example.** `FTestWorldWrapper W; if (W.CreateTestWorld(EWorldType::Game) && W.BeginPlayInTestWorld()) { W.TickTestWorld(1.f / 60.f); }`
 8. **In this project.** `FTestPacerWorld` in `SpawnPacerSubsystemTests.cpp` (05 F4), the pattern UE5-UpdateBudget's lifetime tests use.
+
+## APIs added in step S6 (per-component split)
+
+| # | API | First used in |
+|---|---|---|
+| 27 | `FActorSpawnParameters::CustomPreSpawnInitialization` | S6 |
+| 28 | `UActorComponent::bAutoRegister`, `RegisterComponent`, `CreationMethod`; `TInlineComponentArray` | S6 |
+| 29 | `UEnum` by name: `StaticEnum`, `GetValueByNameString`, `GetNameStringByValue` | S6 |
+
+## 27. `FActorSpawnParameters::CustomPreSpawnInitialization`
+
+1. **What it is.** A `TFunction<void(AActor*)>` in the spawn parameters (`Classes/Engine/World.h:518`).
+2. **Why it exists.** To touch a new actor after it is constructed and before "other systems see this actor spawn".
+3. **How it works.** `SpawnActor` calls it right after `NewObject` (the constructor and default subobjects exist) and before `PostSpawnInitialize`, so before any component is registered (`Private/LevelActor.cpp:729–733`, 01b #3).
+4. **When to use it.** Changing what registration will do: here, clearing `bAutoRegister` on parts to register later.
+5. **When not to.** Gameplay set-up that needs registered components or a transform (use a deferred spawn and set it before `FinishSpawning`).
+6. **Common mistakes.** Capturing something that dies before the call (it runs inside `SpawnActor`, so a reference to a living request is fine); expecting the root to be placed already.
+7. **Example.** `Parameters.CustomPreSpawnInitialization = [&Request](AActor* Actor) { SpawnPacer::HoldBackComponents(*Actor, Request.HeldBack); };`
+8. **In this project.** `USpawnPacerSubsystem::Spawn` for `PerComponent` requests (05 G2).
+
+## 28. `UActorComponent::bAutoRegister`, `RegisterComponent`, `CreationMethod`; `TInlineComponentArray`
+
+1. **What it is.** `bAutoRegister` (public, `Classes/Components/ActorComponent.h:286`): whether the owner's registration pass registers this component. `RegisterComponent()` (`Private/Components/ActorComponent.cpp:2079`): registers one component with its owner's world. `CreationMethod` (431): `Native` for constructor-made components, others for construction-script and instance components. `TInlineComponentArray<T>(Actor)`: an actor's components of type `T`, in an array with inline storage.
+2. **Why it exists.** Components that should exist but not be registered yet, or ever, and a way to register them later.
+3. **How it works.** `IncrementalRegisterComponents` skips components whose flag is false (`Actor.cpp:6235`) and registers an unregistered parent first only if the parent's flag is set (`GetUnregisteredParent`, 6014–6034). `RegisterComponent` runs `OnRegister`, creates render and physics state (`ActorComponent.cpp:2510–2531`): indivisible.
+4. **When to use it.** Holding back parts so their registration can be spread over frames.
+5. **When not to.** After `FinishSpawning`: a component registered after BeginPlay gets its own BeginPlay at registration (01b #4), so the actor's BeginPlay would have missed it.
+6. **Common mistakes.** Holding back a parent but not its child; forgetting to set the flag back (a later re-registration would skip the part); holding back construction-script components (they don't exist yet, 01b #5).
+7. **Example.** `Part->bAutoRegister = false;` … later `Part->bAutoRegister = true; Part->RegisterComponent();`
+8. **In this project.** `HoldBackComponents` and the `Register` job (05 G2); the test actor's `Dormant` part (05 G3).
+
+## 29. `UEnum` by name: `StaticEnum`, `GetValueByNameString`, `GetNameStringByValue`
+
+1. **What it is.** The reflection object of a `UENUM` (`StaticEnum<E>()`), and its name lookups (`CoreUObject/Private/UObject/Enum.cpp:951–1067`).
+2. **Why it exists.** Converting between enum values and their authored names without a hand-written table.
+3. **How it works.** `GetValueByNameString("Whole")` adds the enum's prefix when the name has no `::` (`Enum.cpp:959–964`) and compares case-insensitively by default; it returns `INDEX_NONE` when nothing matches. The generated `E…_MAX` entry is a name too, so a parser must bound the value. `GetNameStringByValue` returns the short name.
+4. **When to use it.** Command-line and config parsing; readable test messages.
+5. **When not to.** Hot paths (string work).
+6. **Common mistakes.** Accepting the `_MAX` entry; assuming case-sensitive matching.
+7. **Example.** `const int64 Value = StaticEnum<ESpawnPacerSplitMode>()->GetValueByNameString(Name);`
+8. **In this project.** The director's `ParseSplitMode` and the tests' `ModeName` (05 G3, G4).

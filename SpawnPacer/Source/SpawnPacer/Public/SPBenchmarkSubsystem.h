@@ -30,6 +30,8 @@ class USpawnPacerSubsystem;
  *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2), or SPS (SpawnPacer, spawn path; 02 9)
  *   -SPCountCap=K     B1: actors per frame (default 25; the batch script passes the calibrated value)
  *   -SPBudgetMs=MS    B2's time cap and SpawnPacer's budget: the same value for both (default 2.0)
+ *   -SPBossSplit=M    SpawnPacer: the boss's split mode, Whole, Deferred or PerComponent (default PerComponent; the
+ *                     split ablation of S6 compares them)
  *   -SPWaveSize=N     actors per wave (default 0: no workload, a normal empty map)
  *   -SPWaves=N        wave cycles in the capture (default 3)
  *   -SPSeed=S         seed for the wave's class order and positions (default 1)
@@ -75,6 +77,7 @@ private:
 		FString Config = TEXT("B0");
 		int32 CountCap = 25;
 		double BudgetMs = 2.0;
+		FString BossSplit = TEXT("PerComponent");
 		int32 WaveSize = 0;
 		int32 Waves = 3;
 		int32 Seed = 1;

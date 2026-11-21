@@ -64,11 +64,19 @@ CONFIGS = {
     "B1": "-SPConfig=B1 -SPCountCap=14",
     "B2": "-SPConfig=B2 -SPBudgetMs=2.0",     # time cap checked between items, at SpawnPacer's budget (02 section 7)
     "B3": "-SPConfig=B3",                    # simple pool, filled during the warm-up
-    "SPS": "-SPConfig=SPS -SPBudgetMs=2.0",   # SpawnPacer, spawn path, same budget as B2 (S5)
+    # SpawnPacer, spawn path, same budget as B2 (S5). Since S6 the boss is PerComponent here; the S5 batch
+    # 2026-11-21_061433_sps_first ran it Deferred, which is now SPSBossDeferred.
+    "SPS": "-SPConfig=SPS -SPBudgetMs=2.0",
+    # The split ablation (S6): the boss per component (SPS), deferred and whole, at 2 ms and at 1 ms.
+    "SPSBossDeferred": "-SPConfig=SPS -SPBudgetMs=2.0 -SPBossSplit=Deferred",
+    "SPSBossWhole": "-SPConfig=SPS -SPBudgetMs=2.0 -SPBossSplit=Whole",
+    "SPS1ms": "-SPConfig=SPS -SPBudgetMs=1.0",
+    "SPSBossDeferred1ms": "-SPConfig=SPS -SPBudgetMs=1.0 -SPBossSplit=Deferred",
+    "SPSBossWhole1ms": "-SPConfig=SPS -SPBudgetMs=1.0 -SPBossSplit=Whole",
 }
 
 SUMMARY_WINDOWS = ("W", "D", "GC", "PRE")
-PACER_CONFIGS = ("SPS",)   # configurations whose spawn work is SpawnPacer's (SPP joins in S7)
+PACER_CONFIGS = ("SPS", "SPSBossDeferred", "SPSBossWhole", "SPS1ms", "SPSBossDeferred1ms", "SPSBossWhole1ms")   # SPP: S7
 
 
 def work_column(config: str) -> str:

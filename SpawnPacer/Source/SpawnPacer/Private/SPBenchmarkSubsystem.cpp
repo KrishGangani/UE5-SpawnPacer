@@ -55,6 +55,18 @@ namespace SPBench
 	constexpr int32 ExitDelayFrames = 3;
 }
 
+/** Maps -SPBossSplit to a split mode by the enum's reflected names (Whole, Deferred, PerComponent; case-insensitive);
+ *  unset for anything else, including the generated _MAX entry (S6 code review). */
+static TOptional<ESpawnPacerSplitMode> ParseSplitMode(const FString& Name)
+{
+	const int64 Value = StaticEnum<ESpawnPacerSplitMode>()->GetValueByNameString(Name);
+	if (Value < 0 || Value > static_cast<int64>(ESpawnPacerSplitMode::PerComponent))
+	{
+		return {};
+	}
+	return static_cast<ESpawnPacerSplitMode>(Value);
+}
+
 bool USPBenchmarkSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
 {
 	return WorldType == EWorldType::Game || WorldType == EWorldType::PIE;
@@ -67,6 +79,7 @@ USPBenchmarkSubsystem::FRunSettings USPBenchmarkSubsystem::ReadRunSettings()
 	FParse::Value(CommandLine, TEXT("SPConfig="), Read.Config);
 	FParse::Value(CommandLine, TEXT("SPCountCap="), Read.CountCap);
 	FParse::Value(CommandLine, TEXT("SPBudgetMs="), Read.BudgetMs);
+	FParse::Value(CommandLine, TEXT("SPBossSplit="), Read.BossSplit);
 	FParse::Value(CommandLine, TEXT("SPWaveSize="), Read.WaveSize);
 	FParse::Value(CommandLine, TEXT("SPWaves="), Read.Waves);
 	FParse::Value(CommandLine, TEXT("SPSeed="), Read.Seed);
@@ -103,6 +116,11 @@ bool USPBenchmarkSubsystem::ValidateRunSettings() const
 	if (!ParseBaseline(Settings.Config).IsSet() && !IsPacerConfig(Settings.Config))
 	{
 		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3, SPS)."), *Settings.Config);
+		bValid = false;
+	}
+	if (!ParseSplitMode(Settings.BossSplit).IsSet())
+	{
+		UE_LOG(LogSPBench, Error, TEXT("-SPBossSplit=%s is not a split mode (Whole, Deferred, PerComponent)."), *Settings.BossSplit);
 		bValid = false;
 	}
 	if (Settings.CountCap < 1 || Settings.BudgetMs <= 0.0)
@@ -159,14 +177,14 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 	else
 	{
-		// SPS. The demo's split modes (02 section 7): grunts and bosses Deferred, so their BeginPlay work can land in a
-		// later frame than their registration; drones and crates Whole. The boss becomes PerComponent in S6. Until the
-		// settings of S9 exist, the director sets the rules itself.
+		// SPS. The demo's split modes (02 section 7): grunts Deferred, so their BeginPlay work can land in a later frame
+		// than their registration; bosses PerComponent (S6; -SPBossSplit for the ablation), so their 23 parts register
+		// one per job; drones and crates Whole. Until the settings of S9 exist, the director sets the rules itself.
 		Pacer = InWorld.GetSubsystem<USpawnPacerSubsystem>();
 		check(Pacer); // the plugin is a hard dependency of this module, and this is a Game or PIE world
 		Pacer->SetBudgetMs(Settings.BudgetMs);
 		Pacer->SetClassRule(ASPGrunt::StaticClass(), ESpawnPacerSplitMode::Deferred);
-		Pacer->SetClassRule(ASPBoss::StaticClass(), ESpawnPacerSplitMode::Deferred);
+		Pacer->SetClassRule(ASPBoss::StaticClass(), ParseSplitMode(Settings.BossSplit).GetValue()); // validated above
 		Pacer->OnBatchComplete.AddUObject(this, &USPBenchmarkSubsystem::HandleBatchComplete);
 	}
 	Camera = InWorld.SpawnActor<ACameraActor>(SPBench::CameraLocation, SPBench::CameraRotation);
@@ -181,6 +199,7 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	CSV_METADATA(TEXT("SPConfig"), *Settings.Config);
 	CSV_METADATA(TEXT("SPCountCap"), *FString::FromInt(Settings.CountCap));
 	CSV_METADATA(TEXT("SPBudgetMs"), *FString::SanitizeFloat(Settings.BudgetMs));
+	CSV_METADATA(TEXT("SPBossSplit"), Pacer ? *Settings.BossSplit : TEXT("n/a")); // only SpawnPacer uses it
 	CSV_METADATA(TEXT("SPWaveSize"), *FString::FromInt(Wave.Num()));
 	CSV_METADATA(TEXT("SPWaves"), *FString::FromInt(Settings.Waves));
 	CSV_METADATA(TEXT("SPSeed"), *FString::FromInt(Settings.Seed));

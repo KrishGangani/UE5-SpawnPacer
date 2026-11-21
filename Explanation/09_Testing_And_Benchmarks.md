@@ -267,6 +267,68 @@ The roadmap's three named tests are `ActorDestroyedBetweenStagesIsDropped`, `Spa
 - The S3 baseline summary was rebuilt with `--resummarize` for the new SC3 column. Every earlier cell is unchanged and the new one is `n/a`.
 - Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
 
+
+---
+
+## Step S6 · Per-component split and the split ablation (2026-11-21)
+
+Jobs:
+- `20261121_062926_ec426f`: build both targets; `run_tests.py --expect 20`; package; a first ablation batch (`2026-11-21_081704_split`, 4 runs each).
+- `20261121_082445_89a529`: the **balanced** ablation, `2026-11-21_090236_split_balanced`, with 6 configurations × 6 runs + 1 priming run.
+- `20261121_082530_a65b28`: build both targets and the 20 tests again, after the simplify change.
+
+| # | Check | Result |
+|---|---|---|
+| S6-a | **Build** | ✅ both targets `Result: Succeeded`, **0 errors, 0 warnings**, in both build jobs; package `BUILD SUCCESSFUL`, cook 0 errors, 0 warnings |
+| S6-b | **20 tests, all passed** | ✅ 9 policy (new: `UnseenComponentIsPredictedFromItsFamily`) + 11 subsystem (new: `PerComponentBeginPlaySeesEveryComponent`, `PerComponentRegistersOneComponentPerJob`; three extended to PerComponent), `editor exit code 0`, in both test runs |
+| S6-c | **Every ablation run valid** | ✅ 37 of 37 runs exit 0, 3 waves complete, 0 log errors or warnings |
+| S6-d | **Rotation balanced** | ⚠ → ✅ The first batch passed `--runs 4` for 6 configurations, and the script warned "the rotation is unbalanced". The brief requires balanced runs, so it was **re-run with 6 runs**. The first batch's files are kept and labelled superseded; nothing below uses it |
+
+The roadmap's test is `PerComponentBeginPlaySeesEveryComponent`: a split spawn shows BeginPlay the same 4 registered components as a whole spawn, and the parts stand where they should.
+
+**The split ablation, balanced** (6 runs each, median [min–max]; W window; summary [2026-11-21_090236_split_balanced](../Benchmarks/Summaries/2026-11-21_090236_split_balanced_summary.md)). `SPS` has the boss PerComponent (the S6 default); grunts are Deferred in every row.
+
+| Budget | Boss | Frames > 33.3 ms | W max FrameTime | Spawn frames over 1.1 × budget, of about N (the median spawn frames per run × 6 runs) | Forced frames | Spawn work max | Wave latency, frames |
+|---|---|---|---|---|---|---|---|
+| 2 ms | **PerComponent** | 0 | 6.47 [6.25–7.60] | **3 of ~996 (0.3%)** | 0 | 2.22 [2.08–2.33] | 54 [50–63] |
+| 2 ms | Deferred | 0 | 6.56 [6.31–8.73] | 1 of ~996 (0.1%) | 4 | 2.04 [1.99–2.60] | 54.5 [51–101] |
+| 2 ms | Whole | 0 | 6.55 [6.34–11.63] | 9 of ~1002 (0.9%) | 7 | 2.37 [2.29–2.78] | 54 [49–128] |
+| 1 ms | PerComponent | 0 | 5.83 [5.43–6.85] | 25 of ~2748 (0.9%) | 8 | 1.41 [1.17–1.47] | 153 [144–162] |
+| 1 ms | Deferred | 0 | 5.94 [5.38–10.77] | 16 of ~2754 (0.6%) | 9 | 1.32 [1.16–1.45] | 152 [142–157] |
+| 1 ms | Whole | 0 | 5.61 [5.45–8.09] | 24 of ~2676 (0.9%) | **81** | 1.43 [1.23–1.78] | 144 [139–217] |
+
+**What the ablation shows (stated plainly):**
+- **Splitting the boss matters only where one boss no longer fits the budget.**
+  - At 2 ms the three modes are the same within noise: no hitches, the same latency, and 0.1–0.9% of spawn frames over 1.1 × budget.
+  - At 1 ms the whole boss is predicted over the budget, so it runs alone as a **forced** job: 81 forced frames, against 8–9 when it is split.
+- **PerComponent buys nothing over Deferred for this boss.**
+  - Its 23 cones have no collision, and registering all of them costs less than the 1 ms budget.
+  - The Deferred seam (registration in one job, BeginPlay in the next) already cuts the boss below the budget.
+  - PerComponent adds 23 jobs and has slightly more overruns at 1 ms (25 against 16), which is within noise across 6 runs.
+  - The per-component seam would matter for actors whose registration alone exceeds the budget (many colliding parts, 01 H2). This demo has none, and the result is reported as it is.
+- **A whole boss completes slightly sooner at 1 ms** (144 against 152–153 frames), because a forced job finishes in one frame. That speed is bought with the 81 frames over budget.
+- **SC3 at the project's 2 ms budget:** 99.7% of SPS spawn frames are within 1.1 × budget (≥ 99% target met in this batch). The S5 single run had 98.7%.
+- **One environmental disturbance, reported and not excluded.**
+  - In rotation round 6, three consecutive runs took 13–19 s instead of 11–12 s, with wave latency 101–128 frames (2 ms) and 217 (1 ms).
+  - That points to a machine-wide slowdown at that time, not to a configuration. The rotation spread it over three configurations, and the medians are unaffected.
+  - It also shows a weakness worth knowing: a burst of slow measurements inflates the estimator's deviation, so jobs run alone for a while. That costs latency, never budget.
+
+**Audit trail for S6:**
+- **Design check before any code:** per-component keys would have made each of the boss's 23 parts a cold job, and a split request holds its queue's head. The first boss would have stalled its queue for about 25 frames. Fixed with the **family prior** (05 G1; 02 §7, §15).
+- `code-review` (medium): 9 findings, all nits, **all fixed**:
+  - a comment stated engine behaviour wrongly (`GetUnregisteredParent` registers a parent first only if its own flag is set); corrected after reading the function;
+  - the brain was held back too: now scene components only, which also keeps the family's samples comparable;
+  - gone or already-registered parts made near-0 ms "jobs": now skipped;
+  - `-SPBossSplit` accepted the generated `_MAX`: now bounded;
+  - a three-way ablation needs `SPSBossDeferred`: added;
+  - the every-mode test never reached a Register job: now uses the parts actor;
+  - the per-job test assumed budget 0 means one job per frame: now counts jobs;
+  - `PostRegisterAllComponents` runs before the held-back parts: documented as a limit (02 §13);
+  - the split-mode metadata appeared in baseline runs: now `n/a` there.
+- `simplify` (self-review, four angles): one change. The "skip held-back parts, then Finish" logic existed twice, and is now one helper, `SkipToNextHeldBack`. That change was built and tested again in job `20261121_082530_a65b28`.
+- `SPS` changed meaning in S6 (boss PerComponent; the S5 batch had it Deferred, now `SPSBossDeferred`), as stated in `run_bench.py` and 05 G4.
+- Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
+
 ---
 
 ## Phases 5–8 (to be written)

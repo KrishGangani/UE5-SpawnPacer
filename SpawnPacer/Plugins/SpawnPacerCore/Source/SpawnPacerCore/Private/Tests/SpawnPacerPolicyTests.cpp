@@ -1,6 +1,7 @@
 // SpawnPacerCore - unit tests for the policy (FSpawnCostModel, FSpawnPacerScheduler): fake jobs, fake costs, no world.
 // Run with: Tools\run_tests.py (through the machine queue), filter "SpawnPacer.Policy".
 
+#include "GameFramework/Actor.h"
 #include "SpawnCostModel.h"
 #include "SpawnPacerScheduler.h"
 #include "Tests/SpawnPacerTestFlags.h"
@@ -78,13 +79,46 @@ bool FSpawnPacerColdKeyTest::RunTest(const FString& Parameters)
 {
 	using namespace SpawnPacerTests;
 	FSpawnCostModel Model;
-	const FSpawnCostKey A = Key(ESpawnPacerStage::Register, TEXT("Part00"));
-	const FSpawnCostKey B = Key(ESpawnPacerStage::Register, TEXT("Part01"));
+	const FSpawnCostKey A = Key(ESpawnPacerStage::Spawn);
+	const FSpawnCostKey B = Key(ESpawnPacerStage::Finish);
 	TestTrue(TEXT("cold"), Model.IsCold(A));
 	TestEqual(TEXT("cold prediction"), Model.Predict(A, 2.0), 2.0, Tolerance);
 	Model.Observe(A, 0.1);
 	TestFalse(TEXT("warm after one sample"), Model.IsCold(A));
-	TestTrue(TEXT("a different component is a different key"), Model.IsCold(B));
+	TestTrue(TEXT("another stage of the same class is a different key, still cold"), Model.IsCold(B));
+	return true;
+}
+
+// S6: a component never measured is predicted from its family (the same class and stage), which learns from every
+// component; a key without a component name has no family to fall back on. Values worked out by hand.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSpawnPacerFamilyTest, "SpawnPacer.Policy.UnseenComponentIsPredictedFromItsFamily", SpawnPacerTests::Flags)
+bool FSpawnPacerFamilyTest::RunTest(const FString& Parameters)
+{
+	using namespace SpawnPacerTests;
+	FSpawnCostModel Model(2.0);
+	const FSpawnCostKey Part0 = Key(ESpawnPacerStage::Register, TEXT("Part00"));
+	const FSpawnCostKey Part1 = Key(ESpawnPacerStage::Register, TEXT("Part01"));
+	const FSpawnCostKey Part2 = Key(ESpawnPacerStage::Register, TEXT("Part02"));
+	const FSpawnCostKey OtherClass = { AActor::StaticClass(), ESpawnPacerStage::Register, TEXT("Part00") };
+	TestTrue(TEXT("nothing measured: cold"), Model.IsCold(Part1));
+
+	Model.Observe(Part0, 0.1);                     // family: mean 0.1, deviation 0.05
+	TestFalse(TEXT("a sibling is not cold"), Model.IsCold(Part1));
+	TestNull(TEXT("but has no estimate of its own"), Model.Find(Part1));
+	TestEqual(TEXT("predicted from the family: 0.1 + 2 x 0.05"), Model.Predict(Part1, 2.0), 0.2, Tolerance);
+	TestTrue(TEXT("another actor class's component is cold"), Model.IsCold(OtherClass));
+
+	Model.Observe(Part1, 0.3);                     // family: deviation 0.75 x 0.05 + 0.25 x 0.2 = 0.0875; mean 0.125
+	const FSpawnCostModel::FEstimate* Family = Model.Find(FSpawnCostModel::FamilyOf(Part2));
+	if (!TestNotNull(TEXT("family estimate"), Family))
+	{
+		return false;
+	}
+	TestEqual(TEXT("family mean"), Family->MeanMs, 0.125, Tolerance);
+	TestEqual(TEXT("family deviation"), Family->DeviationMs, 0.0875, Tolerance);
+	TestEqual(TEXT("family samples"), Family->Samples, 2);
+	TestEqual(TEXT("an unseen sibling: 0.125 + 2 x 0.0875"), Model.Predict(Part2, 2.0), 0.3, Tolerance);
+	TestEqual(TEXT("a measured component uses its own estimate: 0.3 + 2 x 0.15"), Model.Predict(Part1, 2.0), 0.6, Tolerance);
 	return true;
 }
 

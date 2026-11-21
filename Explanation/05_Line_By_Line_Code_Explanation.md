@@ -10,7 +10,8 @@
 | D | S3 (baselines B1–B3) | `SPBaselineSpawner` (rewritten), S3 additions to `SPWaveActor`, `SPWaveBrainComponent`, `SPBenchmarkSubsystem` |
 | E | S4 (pure policy + unit tests) | `SpawnCostModel`, `SpawnPacerScheduler`, `Tests\SpawnPacerPolicyTests.cpp`, `Tools\run_tests.py`, `run_and_reap` in `Tools\run_bench.py` |
 | F | S5 (subsystem + staged spawn) | `SpawnPacerSubsystem`, `Tests\SpawnPacerTestTypes`, `Tests\SpawnPacerTestFlags.h`, `Tests\SpawnPacerSubsystemTests.cpp`; SPS in `SPBenchmarkSubsystem`; `Tools\csv_stats.py` and `run_bench.py` additions |
-| G… | S6 onwards | added with each step |
+| G | S6 (per-component split) | `SpawnCostModel` (families), `SpawnPacerSubsystem` (PerComponent), `Tests\SpawnPacerTestTypes` (parts actor), the S6 tests; `-SPBossSplit` in `SPBenchmarkSubsystem`; the ablation configurations in `Tools\run_bench.py` |
+| H… | S7 onwards | added with each step |
 
 ---
 
@@ -606,3 +607,58 @@ All in the plugin, `Plugins\SpawnPacerCore\Source\SpawnPacerCore\`. Plain C++: n
 | `run_bench.py`: `CONFIGS["SPS"] = "-SPConfig=SPS -SPBudgetMs=2.0"` | SpawnPacer at B2's budget |
 | `run_bench.py`: `PACER_CONFIGS`, `work_column(config)` | Each configuration's summary reads **its own** spawner's work column, never the first one that has data (code review) |
 | `run_bench.py`: the summary's last column | SC3 for SpawnPacer: over-budget frames that were **not** forced / forced frames (sums); `n/a` for the baselines, which predict nothing |
+
+---
+
+## Part G · Step S6: the per-component split
+
+### G1. `SpawnCostModel.h` / `.cpp`: families
+
+| Line | What it does, and why |
+|---|---|
+| `static FSpawnCostKey FamilyOf(const FSpawnCostKey& Key)` | The same class and stage, without a component name |
+| `Lookup(Key)` (private) | The key's own estimate; else, for a key with a component name, its family's; else null |
+| `Predict` | `mean + K × deviation` of whatever `Lookup` found, or the cold value |
+| `IsCold` | `Lookup(Key) == nullptr`: a component is cold only while its whole family is |
+| `Observe` → `ObserveOne(Key)`, and `ObserveOne(FamilyOf(Key))` for a named key | The family learns from every one of its components, with the same RFC 6298 rules. Its deviation therefore carries the spread between the parts, so a prediction from it is cautious |
+| `Find(Key)` | Unchanged: the key's **own** estimate (the test uses it to show a sibling has none of its own) |
+| Why | Without families, the boss's 23 held-back parts are 23 cold keys. A cold job runs only as a frame's first job, and a split request holds its queue's head, so the first boss of a session would stall every request behind it for about 25 frames. Found by reasoning before the first run, not by a benchmark |
+
+### G2. `SpawnPacerSubsystem.h` / `.cpp`: `PerComponent`
+
+| Line | What it does, and why |
+|---|---|
+| `ESpawnPacerSplitMode::PerComponent` | Construct with the native non-root scene components held back, one Register job per component (parent first), then Finish. Its comment states both limits: native components only (01b #5), and `PostRegisterAllComponents` runs in the Construct job, before the held-back parts (02 §13) |
+| `FSpawnPacerRequest::HeldBack`, `NextHeldBack`, `bHoldBackComponents` | The held-back components (weak: the actor may be destroyed between jobs), the next one to register, and whether to hold back at all |
+| `RequestSpawn` | `Mode` from the class rule: `Whole` → `Spawn`; `Deferred` or `PerComponent` → `Construct`; `bHoldBackComponents` for `PerComponent` |
+| `Spawn(Request, bDefer)` | For a `PerComponent` request, sets `FActorSpawnParameters::CustomPreSpawnInitialization` (06 §27) to a lambda that captures the request by reference (it outlives the call) and calls `HoldBackComponents` |
+| `SpawnPacer::HoldBackComponents(Actor, OutHeldBack)` | Runs inside `SpawnActor` after `NewObject` and before `PostSpawnInitialize` registers anything (`LevelActor.cpp:729–733`). For each native (`CreationMethod == Native`) non-root scene component with `bAutoRegister` set: clears the flag (06 §28) and records its attachment depth. **All of them**, because the engine registers an unregistered parent first only if the parent's own flag is set (`GetUnregisteredParent`, `Actor.cpp:6014–6034`): a held-back parent with an auto-registering child would leave the child registering under an unregistered parent. **Scene components only**, because a non-scene component has no render or physics state and, as a family's first sample, would make the family predict the parts far too low (S6 code review). A stable sort by depth puts parents first (04 §20) |
+| `IsHalfSpawned(Request)` | A spawn waiting for `Register` **or** `Finish`. Used by cancellation (`FindHead`) and by the release takeover (`RequestRelease`), which before S6 tested `Finish` only |
+| `Construct` | After the deferred spawn: `NextStage = Register`, then `SkipToNextHeldBack`, which goes straight to `Finish` when nothing is held back (an actor with nothing to hold back behaves like `Deferred`) |
+| `SkipToNextHeldBack(Request)` | Moves past held-back components that are gone or already registered (restoring their flags), so no near-0 ms "job" reaches the cost model (S6 code review); with none left, the next job is `Finish`. Called after Construct, after each Register job, and by `FindHead` for a `Register` head (something may have changed since its last job). One helper instead of two copies (simplify) |
+| `Register` | Actor gone → `Dropped`. Otherwise `bAutoRegister = true` (restored, so a later re-registration, as in level streaming, includes it) and `RegisterComponent()` (`ActorComponent.cpp:2079`: `OnRegister`, render state, physics state, 01b #6), then `SkipToNextHeldBack`. Returns `false`: the request stays at the head |
+| PeekHead's key | For a `Register` job, `(class, Register, component name)`: the next held-back component's name, valid because `FindHead` skipped the rest |
+| `CSV_CUSTOM_STAT(SpawnPacer, RegisterMs, …)` | The per-stage time of the Register jobs |
+
+### G3. Tests and test types (S6)
+
+| Line | What it does, and why |
+|---|---|
+| `ASpawnPacerTestActor::RegisteredAtBeginPlay` | Counted at the start of `BeginPlay`, before `Super`: what the actor's BeginPlay sees |
+| `USpawnPacerTestComponent` | A trivial non-scene component (`UActorComponent` itself is `abstract`, `ActorComponent.h:159`) |
+| `ASpawnPacerTestPartsActor` | Root → `PartA` (+100 cm X) → `PartB` (+50 cm Y), a non-scene `Extra`, and a `Dormant` scene part with `bAutoRegister = false` that must stay unregistered |
+| Policy: `UnseenComponentIsPredictedFromItsFamily` | Hand-worked: after `Part00` = 0.1 ms, `Part01` is not cold, has no estimate of its own, and is predicted 0.2; another actor class's part is cold. After `Part01` = 0.3: family mean 0.125, deviation 0.0875, 2 samples; an unseen `Part02` predicts 0.3; `Part01` uses its own (0.6) |
+| Policy: `ColdKeyIsPredictedAsTheBudget` (changed) | Its "different key" case now uses another **stage**: a sibling component is no longer cold by design |
+| `EveryRequestSpawnsOnceInEveryMode` (was `…InBothModes`) | All three modes, with the parts actor, so `PerComponent` really runs Register jobs (S6 code review) |
+| `ActorDestroyedBetweenStagesIsDropped`, `ReleaseOfAHalfSpawnedActor` (extended) | Both now run `Deferred` and `PerComponent` with the parts actor: destroyed or released while waiting for a Register job |
+| `PerComponentBeginPlaySeesEveryComponent` | Whole and PerComponent: BeginPlay saw 4 registered components (root, PartA, PartB, Extra) in both; `Dormant` unregistered with its own flag false; the held-back flags restored; `PartB` at spawn + 100 X + 50 Y |
+| `PerComponentRegistersOneComponentPerJob` | Budget 0. After Construct: root and `Extra` registered, `PartA` and `PartB` held back. The jobs are **counted** from the frame stats: Construct + 2 Register + Finish = 4 (code review: assuming one job per frame fails if a job measures 0 ms). Checked every frame: never `PartB` without `PartA`; never BeginPlay while a part is held back |
+
+### G4. Director and tools (S6)
+
+| Line | What it does, and why |
+|---|---|
+| `-SPBossSplit=Whole\|Deferred\|PerComponent` (default `PerComponent`) | The boss's split mode for the ablation. Parsed by `ParseSplitMode`, a file-local function (04 §19) using the enum's reflected names (`GetValueByNameString`, 06 §29), bounded to the real enumerators so the generated `_MAX` entry is refused (code review). Validated; written to the CSV metadata for SpawnPacer runs only (`n/a` for the baselines) |
+| `SetClassRule(ASPBoss, …)` | The boss's mode from `-SPBossSplit`; grunts stay `Deferred` |
+| `run_bench.py` `CONFIGS` | `SPS` (boss PerComponent), `SPSBossDeferred`, `SPSBossWhole`, and the same three at 1 ms (`SPS1ms`, `SPSBossDeferred1ms`, `SPSBossWhole1ms`). **`SPS` changed meaning in S6:** the S5 batch ran the boss `Deferred`, which is now `SPSBossDeferred` |
+| `csv_stats.py` `DEFAULT_COLUMNS` | Adds `SpawnPacer/RegisterMs` |

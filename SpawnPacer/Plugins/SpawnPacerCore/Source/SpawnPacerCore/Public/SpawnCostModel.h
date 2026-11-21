@@ -52,6 +52,12 @@ struct FSpawnCostKey
  * 02 section 7). A key never measured is "cold": it is predicted as the caller's cold value (the scheduler passes the
  * whole budget, and runs a cold job only as the first job of a frame).
  *
+ * Families (S6): a key with a component name also teaches its family, (class, stage, no name), which every component
+ * of that actor class and stage feeds. A component never measured itself is predicted from its family and is not cold
+ * once the family has a sample. Otherwise a boss's 23 held-back parts would be 23 cold jobs, each alone in a frame,
+ * holding the head of its queue for 23 frames; the family's deviation carries the spread between its components. Only
+ * scene components are held back (SpawnPacerSubsystem.cpp), so a family holds comparable jobs.
+ *
  * Plain C++, no UObject: the policy is unit-tested without a world (step S4).
  */
 class UE_API FSpawnCostModel
@@ -73,26 +79,36 @@ public:
 	{
 	}
 
-	/** Predicted milliseconds for the key: mean + K x deviation, or ColdPredictionMs if it was never measured. */
+	/** The family of a key: the same class and stage, without a component name. */
+	static FSpawnCostKey FamilyOf(const FSpawnCostKey& Key) { return { Key.Class, Key.Stage, NAME_None }; }
+
+	/** Predicted milliseconds for the key: mean + K x deviation of its own estimate, else of its family's (a key with a
+	 *  component name), else ColdPredictionMs. */
 	double Predict(const FSpawnCostKey& Key, double ColdPredictionMs) const;
 
-	/** True if the key has never been measured (or seeded). */
-	bool IsCold(const FSpawnCostKey& Key) const { return !Estimates.Contains(Key); }
+	/** True if neither the key nor (for a key with a component name) its family has been measured or seeded. */
+	bool IsCold(const FSpawnCostKey& Key) const { return Lookup(Key) == nullptr; }
 
-	/** Learns one measurement. The first sets mean = R and deviation = R / 2; later ones update the deviation with the
-	 *  old mean first, then the mean (RFC 6298 rules 2.2 and 2.3). */
+	/** Learns one measurement, for the key and, if it has a component name, for its family. The first sets
+	 *  mean = R and deviation = R / 2; later ones update the deviation with the old mean first, then the mean
+	 *  (RFC 6298 rules 2.2 and 2.3). */
 	void Observe(const FSpawnCostKey& Key, double MeasuredMs);
 
 	/** Sets an estimate directly: for tests, and for seeding from a saved table later (02 section 12). */
 	void Seed(const FSpawnCostKey& Key, double MeanMs, double DeviationMs) { Estimates.Add(Key, { MeanMs, DeviationMs, 1 }); }
 
-	/** The estimate of a key, or null if it is cold. */
+	/** The key's own estimate (not its family's), or null if it has none. */
 	const FEstimate* Find(const FSpawnCostKey& Key) const { return Estimates.Find(Key); }
 
 	double GetDeviationMultiplier() const { return DeviationMultiplier; }
 	void SetDeviationMultiplier(double InDeviationMultiplier) { DeviationMultiplier = InDeviationMultiplier; }
 
 private:
+	/** The key's own estimate, else its family's (keys with a component name only), else null. */
+	const FEstimate* Lookup(const FSpawnCostKey& Key) const;
+
+	void ObserveOne(const FSpawnCostKey& Key, double MeasuredMs);
+
 	TMap<FSpawnCostKey, FEstimate> Estimates;
 	double DeviationMultiplier;
 };
