@@ -310,3 +310,68 @@ The spawn, registration, pool and profiling APIs that the design relies on (`Spa
 6. **Common mistakes.** Storing it in a member or a container; making one from a temporary lambda and using it after the statement ends.
 7. **Example.** `static FSpawnPacerFrameStats RunFrame(double BudgetMs, FSpawnCostModel& Model, TFunctionRef<TOptional<FSpawnCostKey>()> PeekHead, TFunctionRef<double()> RunHead);`
 8. **In this project.** `FSpawnPacerScheduler::RunFrame` (05 E2): the policy calls the mechanism through two borrowed functions, so the tests can pass fake jobs.
+
+## APIs added in step S5 (subsystem + staged spawn)
+
+| # | API | First used in |
+|---|---|---|
+| 22 | `FWorldDelegates::OnWorldPostActorTick` | S5 |
+| 23 | `UWorldSubsystem` `Initialize` / `Deinitialize`, delegate handles (`AddUObject`, `Remove`) | S5 |
+| 24 | `DECLARE_MULTICAST_DELEGATE_OneParam` | S5 |
+| 25 | `TWeakObjectPtr` | S5 |
+| 26 | `FTestWorldWrapper` | S5 (tests) |
+
+## 22. `FWorldDelegates::OnWorldPostActorTick`
+
+1. **What it is.** A global multicast delegate, `FOnWorldPostActorTick(UWorld*, ELevelTick, float)` (`Classes/Engine/World.h:4526–4527`), broadcast by `UWorld::Tick`.
+2. **Why it exists.** To run code once per world tick after all actor ticking is done.
+3. **How it works.** Inside `UWorld::Tick` (`Private/LevelTick.cpp`): the tick groups up to `TG_PostPhysics` (1750–1778), then every tickable object (`FTickableGameObject::TickObjects`, 1821), then `TG_PostUpdateWork` and `TG_LastDemotable` (1877, 1883), then **this broadcast** (1906), then the frame's garbage-collection check (1970). Only when actors tick: not paused, not a time-only tick (`bDoingActorTicks`, 1650–1656). Every world's tick broadcasts it, so a handler checks the world.
+4. **When to use it.** Work that must come after everything else in a frame has had its chance to make requests, in a fixed place.
+5. **When not to.** Work that must happen before or between particular tick groups (use a tick function); work while paused.
+6. **Common mistakes.** Not checking the world (every PIE client and editor world calls you); not removing the handler (a dangling handle after the subsystem is gone).
+7. **Example.** `Handle = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UMySubsystem::OnPostActorTick);` … `void UMySubsystem::OnPostActorTick(UWorld* World, ELevelTick, float) { if (World == GetWorld()) { … } }`
+8. **In this project.** `USpawnPacerSubsystem` does its frame's work there (05 F2): a request made by any tickable or actor is served in the same frame, whatever order tickables run in (02 §4.1, §15).
+
+## 23. `UWorldSubsystem` `Initialize` / `Deinitialize`, delegate handles
+
+1. **What it is.** The subsystem's start and end (`USubsystem::Initialize(FSubsystemCollectionBase&)`, `Deinitialize()`), and `FDelegateHandle`, the receipt `Add…` returns.
+2. **Why it exists.** A subsystem lives exactly as long as its world; what it registers globally it must unregister itself.
+3. **How it works.** `Initialize` runs when the world creates its subsystems, before `OnWorldBeginPlay`; `Deinitialize` when the world is cleaned up. `AddUObject(this, &Fn)` binds a member function and returns a handle; `Remove(Handle)` unbinds exactly that binding.
+4. **When to use it.** Setting up containers and global handlers; tearing them down.
+5. **When not to.** Spawning actors in `Initialize` (the world hasn't begun play: use `OnWorldBeginPlay`).
+6. **Common mistakes.** Forgetting `Super::`; removing by object (`RemoveAll`) when other bindings of the same object must stay; using the world in `Deinitialize` as if it were still playing.
+7. **Example.** `void UMy::Deinitialize() { FWorldDelegates::OnWorldPostActorTick.Remove(Handle); Super::Deinitialize(); }`
+8. **In this project.** `USpawnPacerSubsystem` (05 F2).
+
+## 24. `DECLARE_MULTICAST_DELEGATE_OneParam`
+
+1. **What it is.** A macro that declares a native multicast delegate type: `DECLARE_MULTICAST_DELEGATE_OneParam(FSpawnPacerBatchCompleteDelegate, int32)`.
+2. **Why it exists.** To let any number of listeners react to an event without the sender knowing them.
+3. **How it works.** `AddUObject`, `AddLambda`, `AddRaw` bind; `Broadcast(Args)` calls every binding; a UObject binding is skipped once its object is gone. Not visible to Blueprint (that needs a `DYNAMIC` delegate, S9).
+4. **When to use it.** Native events with zero or more listeners.
+5. **When not to.** Blueprint-facing events; a single required callback (a `TFunction` is simpler).
+6. **Common mistakes.** Changing the container a broadcast came from inside a handler; a lambda capturing a reference that dies before the delegate.
+7. **Example.** `Pacer->OnBatchComplete.AddUObject(this, &USPBenchmarkSubsystem::HandleBatchComplete);`
+8. **In this project.** `USpawnPacerSubsystem::OnBatchComplete` (05 F1), listened to by the director (05 F3) and the tests (05 F4). The subsystem collects completed batches first and broadcasts afterwards, so a handler may create batches.
+
+## 25. `TWeakObjectPtr`
+
+1. **What it is.** A pointer to a `UObject` that doesn't keep it alive and knows when it is gone (`Core/Public/UObject/WeakObjectPtrTemplates.h`).
+2. **Why it exists.** To refer to an object someone else owns, safely.
+3. **How it works.** It stores the object's index and serial number (like `TObjectKey`, 06 §20). `Get()` returns the object or null; `IsValid()` is false once the object is destroyed (marked as garbage) or collected.
+4. **When to use it.** References across frames to actors you don't own: a request's half-spawned actor, the director's list of live actors.
+5. **When not to.** When you must keep the object alive (a `UPROPERTY` `TObjectPtr`); in tight loops (each `Get()` is a lookup).
+6. **Common mistakes.** Calling `Get()` once and keeping the raw pointer across frames; assuming "valid" means "has begun play".
+7. **Example.** `if (AActor* Actor = Request.Actor.Get(); IsValid(Actor)) { Actor->FinishSpawning(T); }`
+8. **In this project.** `FSpawnPacerRequest::Actor`, `USPBenchmarkSubsystem::PacedLive` and the director's weak self-capture in `OnSpawned` (05 F1, F3).
+
+## 26. `FTestWorldWrapper`
+
+1. **What it is.** The engine's helper for a temporary world in a test (`Engine/Public/Tests/AutomationCommon.h:30–72`).
+2. **Why it exists.** Tests that need actors to really spawn and begin play.
+3. **How it works.** `CreateTestWorld(EWorldType::Game)`, `BeginPlayInTestWorld()`, `TickTestWorld(DeltaTime)` (which calls `UWorld::Tick(LEVELTICK_All, …)` and advances `GFrameCounter`, `Private/Tests/AutomationCommon.cpp:220–236`); the destructor destroys the world.
+4. **When to use it.** Functional tests of world subsystems and actors, from a simple automation test.
+5. **When not to.** Rendering or input; anything needing a map.
+6. **Common mistakes.** Callbacks that write to locals declared **after** the wrapper (the world, and its callbacks, outlive them); keeping raw pointers to actors across ticks (a tick may run garbage collection).
+7. **Example.** `FTestWorldWrapper W; if (W.CreateTestWorld(EWorldType::Game) && W.BeginPlayInTestWorld()) { W.TickTestWorld(1.f / 60.f); }`
+8. **In this project.** `FTestPacerWorld` in `SpawnPacerSubsystemTests.cpp` (05 F4), the pattern UE5-UpdateBudget's lifetime tests use.

@@ -1,0 +1,16 @@
+// SpawnPacerCore - the automation-test flags shared by every SpawnPacer test file.
+
+#pragma once
+
+#include "Misc/AutomationTest.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+namespace SpawnPacerTests
+{
+	/** Editor and game contexts; one filter (ProductFilter: a project's own tests), as the macro requires
+	 *  (AutomationTest.h:4127-4133). */
+	constexpr EAutomationTestFlags Flags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter;
+}
+
+#endif // WITH_DEV_AUTOMATION_TESTS

@@ -64,9 +64,16 @@ CONFIGS = {
     "B1": "-SPConfig=B1 -SPCountCap=14",
     "B2": "-SPConfig=B2 -SPBudgetMs=2.0",     # time cap checked between items, at SpawnPacer's budget (02 section 7)
     "B3": "-SPConfig=B3",                    # simple pool, filled during the warm-up
+    "SPS": "-SPConfig=SPS -SPBudgetMs=2.0",   # SpawnPacer, spawn path, same budget as B2 (S5)
 }
 
 SUMMARY_WINDOWS = ("W", "D", "GC", "PRE")
+PACER_CONFIGS = ("SPS",)   # configurations whose spawn work is SpawnPacer's (SPP joins in S7)
+
+
+def work_column(config: str) -> str:
+    """The column holding this configuration's own spawn work (never another spawner's, even if one published)."""
+    return "SpawnPacer/WorkMs" if config in PACER_CONFIGS else "SPBaseline/WorkMs"
 
 
 def powershell(command: str) -> str:
@@ -235,19 +242,24 @@ def write_summary(batch: str, environment: dict, records: list[dict], expected_w
              "FrameTime cells: median across runs of each run's statistic, then [min-max across runs], in ms. "
              "Hitch columns: frames over 33.3 ms, summed over runs, and the largest count in one run.", ""]
     header = ("| Config | Work | Runs | Window | Frames/run | FrameTime median | p99 | max | >33.3 ms (sum / worst run) | "
-              "Spawn frames/run | Spawn work p99 (ms) | Spawn work max (ms) | Spawn frames > 1.1 x budget (sum / worst run) |")
+              "Spawn frames/run | Spawn work p99 (ms) | Spawn work max (ms) | Spawn frames > 1.1 x budget (sum / worst run) | "
+              "SC3: of them unforced / forced frames (sum) |")
     lines += [header, "|" + "---|" * (header.count("|") - 1)]
     for (config, work), group in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
         for window in SUMMARY_WINDOWS:
             stats = [g["windows"][window] for g in group]
             frame = [s["columns"].get("FrameTime") for s in stats]
             frame = [f for f in frame if f]
-            active = [next(iter(s.get("active_work", {}).values()), None) for s in stats]
+            active = [s.get("active_work", {}).get(work_column(config)) for s in stats]
             active = [a for a in active if a]
             hitches = [s.get("over_33_3ms", 0) for s in stats]
             over = [a["over_budget"] for a in active]
             spawn_cells = (f"{statistics.median([a['n'] for a in active]):.0f} | {across_runs([a['p99'] for a in active])} | "
                            f"{across_runs([a['max'] for a in active])} | {sum(over)} / {max(over)}") if active else "0 | n/a | n/a | n/a"
+            # SpawnPacer only (baselines have no prediction, so nothing is "forced"): SC3 counts forced frames apart.
+            paced = [a for a in active if "forced" in a]
+            spawn_cells += (f" | {sum(a['over_budget_unforced'] for a in paced)} / {sum(a['forced'] for a in paced)}"
+                            if paced else " | n/a")
             lines.append(f"| {config} | {work if work is not None else 'default'} | {len(group)} | {window} | "
                          f"{statistics.median([s['frames'] for s in stats]):.0f} | "
                          f"{across_runs([f['median'] for f in frame])} | {across_runs([f['p99'] for f in frame])} | "
@@ -255,7 +267,7 @@ def write_summary(batch: str, environment: dict, records: list[dict], expected_w
         # Per run: the median latency of its waves; then median and [min-max] across runs, like every other cell.
         per_run = [statistics.median(g["wave_latency_frames"]) for g in group if g.get("wave_latency_frames")]
         lines.append(f"| {config} | {work if work is not None else 'default'} | {len(group)} | latency | | "
-                     f"wave latency, frames (per-run median): {across_runs([float(v) for v in per_run])} | | | | | | | |")
+                     f"wave latency, frames (per-run median): {across_runs([float(v) for v in per_run])} | | | | | | | | |")
     lines += ["", "Excluded runs (non-zero exit, timeout, bad capture or log, wrong wave count, or a wave that never "
               f"completed; their files stay in Raw): {', '.join(excluded) if excluded else 'none'}.",
               "", f"Raw files: `Benchmarks/Raw/{batch}_*` (CSV, run report and log per run) and `{batch}_manifest.json`."]

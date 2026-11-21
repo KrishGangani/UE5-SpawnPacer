@@ -19,6 +19,9 @@ enum class ESpawnPacerStage : uint8
 	Destroy     // DestroyActor
 };
 
+/** Number of stages, for arrays indexed by stage. */
+inline constexpr int32 NumSpawnPacerStages = static_cast<int32>(ESpawnPacerStage::Destroy) + 1;
+
 /**
  * What one estimate is kept for: a class, a stage and, for Register, the component's name. Default subobjects have the
  * same name in every instance of a class, so the name identifies "the same component" across spawns.

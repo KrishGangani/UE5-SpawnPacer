@@ -81,3 +81,19 @@
 | ⚠ caught: **dereferencing a lookup result in a test without checking it** | One regression crashes the whole test run, with no failing test named | `if (!TestNotNull(...)) return false;` | The run log ends without `Test Completed` lines |
 | **Comparing floating-point sums at a boundary exactly** | A test that passes on one compiler and fails on another | A tolerance, or accept both sides of the boundary (04 §17) | Print the sum with 17 digits |
 | **Storing a `TFunctionRef`** | A crash or garbage after the call returned | Only as a parameter; `TFunction` or a delegate to keep one (06 §21) | Address sanitiser; check where the callable lived |
+
+## Subsystem and staged spawn (step S5)
+
+| Mistake | How to spot it | How to prevent it | How to debug it |
+|---|---|---|---|
+| **Serving requests from a tickable that may tick before the requester** | Latency differs by a frame between runs, or between two machines | Do the work on `OnWorldPostActorTick`, after every tickable (06 §22) | Log `GFrameCounter` at the request and at the spawn |
+| **Detecting completion in your own tick when the work happens later in the frame** | The completion event is one frame late for one configuration only | Complete where the last piece of work reports (the ready notification, the batch callback) (05 F3) | Compare the completion frame with the frame of the last spawn |
+| **Modifying the queue being iterated** (a BeginPlay that spawns more, a callback that cancels) | Crashes or skipped requests, only with re-entrant gameplay | Requests made during a stage go to `Incoming`; `CancelBatch` changes flags only (02 §8) | The test `SpawnFromInsideBeginPlay`; an ensure on the queue size around `RunStage` |
+| **Keeping a raw pointer to a half-spawned actor across frames** | A crash on `FinishSpawning` after a level unload or gameplay destroy | `TWeakObjectPtr` and a validity check in every stage (06 §25) | The test `ActorDestroyedBetweenStagesIsDropped` |
+| **Callbacks firing during world teardown** | Code runs against a world that is being destroyed | `Deinitialize` ends waiting requests silently and clears the delegate | The test `WorldEndsWithRequestsPending` |
+| **Forgetting to remove a global delegate handler** | A crash in a later world after the subsystem is gone | `Remove(Handle)` in `Deinitialize` (06 §23) | Create a second world after destroying the first (the same test) |
+| ⚠ caught: **deciding what a cancel means at the moment it is made** | A cancel from inside a request's own callback leaves a half-spawned actor in the level | Set a flag; decide at the request's next stage, from its state then (05 F2) | The test `CancelFromInsideInitialize` |
+| ⚠ caught: **a release that races the spawn of the same actor** | Whether a released half-spawned actor runs BeginPlay depends on two requests' priorities | The spawn request itself becomes the release (02 §8) | The test `ReleaseOfAHalfSpawnedActor` |
+| ⚠ caught: **an idle system that still publishes** | A baseline run's summary shows another spawner's numbers | Publish nothing until first use; analyse each configuration's own column | Open a baseline capture and look for `SpawnPacer/*` columns |
+| ⚠ caught: **"the last record" as the owner of an asynchronous result** | A slow completion is written to the next cycle's record | Keep the id on the record it belongs to and look it up | Shorten the cycle until the despawn overlaps the next wave |
+| **Different spawn parameters for different spawners** | One configuration's actors are moved or refused on collision | The director gives SpawnPacer exactly the baselines' parameters (`AlwaysSpawn`) | Compare actor counts and positions between configurations |

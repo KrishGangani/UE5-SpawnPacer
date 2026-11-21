@@ -9,7 +9,8 @@
 | C | S2 (measurement tools) | `Tools\csv_stats.py`, `Tools\run_bench.py` |
 | D | S3 (baselines B1–B3) | `SPBaselineSpawner` (rewritten), S3 additions to `SPWaveActor`, `SPWaveBrainComponent`, `SPBenchmarkSubsystem` |
 | E | S4 (pure policy + unit tests) | `SpawnCostModel`, `SpawnPacerScheduler`, `Tests\SpawnPacerPolicyTests.cpp`, `Tools\run_tests.py`, `run_and_reap` in `Tools\run_bench.py` |
-| F… | S5 onwards | added with each step |
+| F | S5 (subsystem + staged spawn) | `SpawnPacerSubsystem`, `Tests\SpawnPacerTestTypes`, `Tests\SpawnPacerTestFlags.h`, `Tests\SpawnPacerSubsystemTests.cpp`; SPS in `SPBenchmarkSubsystem`; `Tools\csv_stats.py` and `run_bench.py` additions |
+| G… | S6 onwards | added with each step |
 
 ---
 
@@ -506,3 +507,102 @@ All in the plugin, `Plugins\SpawnPacerCore\Source\SpawnPacerCore\`. Plain C++: n
 | Line | What it does, and why |
 |---|---|
 | `def run_and_reap(command, timeout) -> int \| None` | `subprocess.Popen(command)` (one string, so `-Key="…"` reaches Unreal as written); `wait(timeout)`; `None` on a timeout; **`finally`:** if it is still running, `taskkill /F /T` its tree and wait up to 30 s, so Windows releases its files and nothing runs into the next job. Used by `launch` and by `run_tests.py`, so both tools kill and wait the same way (it replaced two copies; the test runner's copy waited without a timeout) |
+
+---
+
+## Part F · Step S5: the subsystem and the staged spawn (Whole, Deferred)
+
+### F1. `Public\SpawnPacerSubsystem.h`: the public API and the request
+
+| Line | What it does, and why |
+|---|---|
+| `UENUM(BlueprintType) enum class ESpawnPacerPriority : uint8 { Background, Normal, High };` | The three FIFO levels of 02 §7. `UENUM` so Blueprint can use it (S9) and tests can print it (`UEnum::GetValueAsString`) |
+| `UENUM(BlueprintType) enum class ESpawnPacerSplitMode : uint8 { Whole, Deferred };` | How a class's spawn is cut into jobs (02 §2). `PerComponent` comes with S6 |
+| `struct FSpawnPacerSpawnParams` | One request: class, transform, priority, batch id, collision handling (`Undefined` = the class's own choice, as `SpawnActor` does), and two optional callbacks. `Initialize` runs after construction and native registration, before the construction script and BeginPlay, **in both modes** (F2); `OnSpawned` runs once the actor has finished spawning, and never for a request that was dropped or cancelled. Moved into the subsystem (`RequestSpawn(FSpawnPacerSpawnParams&&)`), so the callbacks are not copied |
+| `struct FSpawnPacerTotals { Completed; Dropped; Cancelled; }` | Requests that ended, by outcome, since the world began: for tests, the run log and the debug display |
+| `enum class ESpawnPacerRequestKind : uint8 { Spawn, Release };` | Outside the `USTRUCT`: UHT reads the struct, and a plain nested enum there is not worth the risk |
+| `USTRUCT() struct FSpawnPacerRequest` | One request's state machine (02 §6.2). `UPROPERTY() TSubclassOf<AActor> Class` keeps the class alive while the request waits (GC sees it through the subsystem's `UPROPERTY` arrays). `TWeakObjectPtr<AActor> Actor` is weak on purpose (06 §25): anything may destroy the actor between its stages. `NextStage` is the job it is waiting for; `bCancelled` ends it without a job |
+| `USTRUCT() struct FSpawnPacerQueue { TArray<FSpawnPacerRequest> Requests; int32 Head; }` | One priority level. Requests before `Head` have ended; the front is cut off in bulk at the end of a frame (F2, step 3), so ending a request is `++Head`, not an array shift |
+| `DECLARE_MULTICAST_DELEGATE_OneParam(FSpawnPacerBatchCompleteDelegate, int32)` | The native batch-complete event (06 §24); a Blueprint-assignable one comes with S9 |
+| `UCLASS(MinimalAPI) class USpawnPacerSubsystem : public UWorldSubsystem` | `MinimalAPI` exports only the class's type information; the functions other modules call carry `UE_API` |
+| `Initialize` / `Deinitialize` | Add and remove the global `OnWorldPostActorTick` handler (06 §22, §23) |
+| `CreateBatch()` | A new id. A batch completes at the end of the first SpawnPacer frame in which none of its requests is outstanding, so its requests are added in the frame it is created (an empty batch completes at the end of the next frame) |
+| `RequestSpawn(FSpawnPacerSpawnParams&&)` → `bool` | Queues a spawn into `Incoming`; false without a class |
+| `RequestRelease(Actor, Priority, BatchId)` → `bool` | Queues a budgeted Destroy job (a pooled class is parked instead from S7); false for an invalid actor. An actor SpawnPacer has constructed but not finished is **never finished**: its own request becomes the release (02 §8; F2) |
+| `CancelBatch(BatchId)` | Takes effect at each request's next stage: not started → ends without a job; half-spawned → a Destroy job instead of its Finish; last stage already running → completes |
+| `SetClassRule(Class, Mode)` | A class's split mode from its next request on. The director calls it until the settings of S9 exist |
+| `SetBudgetMs` (≥ 0), `GetNumPending`, `GetCostModel`, `GetLastFrameStats`, `GetTotals` | Small accessors; budget 0 means one job per frame (the progress rule) |
+| `DoesSupportWorldType` | Game and PIE only (06 §14) |
+| Private: `Queues` (`UPROPERTY`, indexed by priority), `Incoming` (`UPROPERTY`), `OpenBatches` (`TMap<int32, int32>`: outstanding per open batch), `ClassRules` (`TMap<TObjectKey<UClass>, ESpawnPacerSplitMode>`, weak keys, 06 §20), `CostModel`, `BudgetMs = 2.0`, `HeadQueue`, `Running` (the request whose stage is running), `bActive`, `FFrameCounters` (per-stage ms and outcomes, reset after each frame is published), `LastFrameStats`, `Totals`, `PostActorTickHandle` | Everything one world's pacer owns. `HeadQueue` points into `Queues`, which is sized once in `Initialize` and never resized |
+
+### F2. `Private\SpawnPacerSubsystem.cpp`: the mechanism
+
+| Line | What it does, and why |
+|---|---|
+| `CSV_DEFINE_CATEGORY(SpawnPacer, true);` | The telemetry category, on by default (06 §10) |
+| `Initialize`: `Queues.SetNum(3)`; `OnWorldPostActorTick.AddUObject(this, &HandlePostActorTick)` | One FIFO per priority; the work point (06 §22) |
+| `Deinitialize` | Removes the handler first; then requests still waiting end **silently**: no callbacks, no batch events (the test `WorldEndsWithRequestsPending` checks it). Half-spawned actors are in the level's actor list, so the world destroys them with the rest |
+| `CreateBatch`, `AddToBatch` | Ids count up from 0; a request with an unknown batch id is logged as a warning and counted in no batch |
+| `RequestSpawn` | Looks up the class rule **now** (a rule changed later applies to later requests), fills a request in `Incoming`: `Construct` first for `Deferred`, `Spawn` for `Whole`; moves the callbacks in |
+| `RequestRelease` | First checks the three queue heads (a half-spawned request is always at its queue's head: it stays there from Construct to Finish): if one holds this actor and isn't the request running right now, that spawn **ends as cancelled** (its batch is told) and the same request becomes the release, keeping its place (code review: a separate release raced the Finish job, and the outcome depended on priorities). Otherwise a `Release` request whose first stage is `Destroy`, keyed on the actor's class |
+| `bActive` (set by `CreateBatch`, `RequestSpawn`, `RequestRelease`) | Until the first use, `HandlePostActorTick` does nothing: a world that never uses SpawnPacer (every baseline run) has no `SpawnPacer` work and no `SpawnPacer` columns (code review: an idle pacer's 0.01 ms frame could otherwise be read as a baseline's spawn work) |
+| `ForEachOpenRequest` + `CancelBatch` | Visits every request not yet ended, queued or incoming, and sets `bCancelled`: a flag only, never the arrays, so it is safe even from a callback inside a stage. **What the cancel means is decided at the head** (`FindHead`), from the request's state then. Code review: deciding at cancel time missed a cancel made inside the request's own Construct job, which left the actor half-spawned |
+| `HandlePostActorTick` | The delegate is global, so it checks the world first |
+| `FindHead` | From High to Background, the first request at a head. A cancelled one is resolved there: half-spawned (`Spawn` waiting for `Finish`) → its next job becomes `Destroy`; already a clean-up `Destroy` → returned as it is; anything else (not started, or a release) → ends as cancelled with no job and no cost, and the search goes on. Remembers the queue in `HeadQueue` |
+| `Spawn(Request, bDefer)` | `FActorSpawnParameters` with the request's collision handling and `bDeferConstruction`; `World->SpawnActor(Class, &Transform, Parameters)` |
+| `RunStage` **Spawn** (Whole) | Without `Initialize`: a plain `SpawnActor`, exactly the B0 baseline's work. With one: deferred, `Initialize`, `FinishSpawning` in the **same** job: the same engine work, because a plain `SpawnActor` is `PostSpawnInitialize` + `FinishSpawning` (`Private/Actor.cpp:4357–4360`), and `Initialize` means the same thing in both modes. If `Initialize` cancelled the request's own batch, the actor is destroyed instead of finished. A cancel during BeginPlay comes too late: the actor exists, so the request completes |
+| `RunStage` **Construct** | `SpawnActor` deferred (construction + native registration, 06 §15); keeps the weak pointer; `Initialize`; next stage `Finish`; returns `false`: the request stays at the head, so its `Finish` comes next, this frame if predicted to fit, else in a later one |
+| `RunStage` **Finish** | The actor is gone → `Dropped` (02 §8: destroyed between its stages); otherwise `FinishSpawning(Transform)` (construction script, initialisation, BeginPlay) |
+| `Finished` (lambda) | Valid after its own BeginPlay → `OnSpawned`, `Completed`; destroyed in its own BeginPlay, or the spawn failed → `Dropped` |
+| `RunStage` **Destroy** | `Destroy()` if still valid. A `Spawn` request only reaches `Destroy` by being cancelled half-spawned: `Cancelled`. A release: `Completed`, or `Dropped` if its actor was already destroyed behind our back, like every stage that finds its actor gone (code review) |
+| `default: checkNoEntry()` | `Register`, `Acquire`, `Release` belong to S6 and S7 |
+| `End(Request, Outcome)` | Counts the outcome (frame and totals) and takes one off its batch |
+| `RunFrame` step 1 | `Incoming` joins its level in request order; `Incoming.Reset()` |
+| `RunFrame` step 2 | `FSpawnPacerScheduler::RunFrame(BudgetMs, CostModel, PeekHead, RunHead)` (05 E2). **PeekHead:** `FindHead`, key `(class, next stage, NAME_None)`. **RunHead:** the head request of `HeadQueue` (nothing between the peek and this call moves a queue), marks it `Running`, times **one** `RunStage` with `Cycles64`, adds it to the stage's ms, `++Head` if it ended, returns the ms. User code inside a stage (BeginPlay, callbacks) can only add to `Incoming` (02 §8) |
+| `RunFrame` step 3 | Compaction: an empty queue is reset; otherwise the ended front is removed in one `RemoveAt(0, Head)` once it is at least 64 requests and half the array. Amortised: each request is moved at most a few times |
+| `RunFrame` step 4 | Batches with nothing outstanding are collected first, removed, and broadcast after the telemetry: a handler may create batches or requests |
+| `WorkMs` | `Cycles64` around steps 1–4: the merge, the scheduler with every job, compaction and batch bookkeeping. Measured the way the baselines measure theirs (their whole loop), so the two columns compare like with like |
+| Step 5 telemetry | Once per frame, outside `WorkMs` (13 stats, about 0.65 µs): `WorkMs`, `PredictedMs`, `Jobs`, `ForcedJobs`, `ColdJobs`, `Pending`, `Completed`, `Dropped`, `Cancelled`, `SpawnMs`, `ConstructMs`, `FinishMs`, `DestroyMs`; the frame counters are reset **after** publishing, so a request that ends between frames (a release taking over a half-spawned request) is counted in the next frame; then `CSV_EVENT(SpawnPacer, "BatchComplete %d")` and `OnBatchComplete` per completed batch |
+
+### F3. `SPBenchmarkSubsystem`: the SPS configuration
+
+| Line | What it does, and why |
+|---|---|
+| `IsPacerConfig(Config)` | `SPS` (SPP from S7). `ValidateRunSettings` accepts B0–B3 and SPS |
+| `OnWorldBeginPlay`, SPS branch | No baseline spawner is created (so no `SPBaseline` column in an SPS capture). `Pacer = GetSubsystem<USpawnPacerSubsystem>()` (a `check`: the plugin is a hard dependency and this is a Game or PIE world); budget = `-SPBudgetMs` (the same value B2 gets); grunts and bosses `Deferred` (02 §7; the boss becomes `PerComponent` in S6), drones and crates `Whole`; `OnBatchComplete` → `HandleBatchComplete` |
+| `NotifyActorReady()` (moved out of the header) | Counts a ready actor and **completes the wave at once** when the count reaches the wave size, with that frame's number and world time. Before S5 the check ran in the director's `Tick` after the baseline's `RunFrame`, which for a baseline is the same frame; SpawnPacer works later in the frame (02 §4.1), so the check had to move to the notification itself. Baseline results are unchanged |
+| `FWaveRecord::PacerWaveBatch`, `PacerDespawnBatch` | Each cycle's two SpawnPacer batches, kept on its own record (code review: kept once for the director, a despawn that completed after the next wave began would have been written to the wrong record) |
+| `RequestPacedWave(Record)` | One batch; one request per wave entry with the **baselines' spawn parameters** (`AlwaysSpawn`, 05 D1); `OnSpawned` adds the actor to `PacedLive` through a weak pointer to the director |
+| `RequestPacedDespawn(Record)` | `CancelBatch(Record.PacerWaveBatch)` (nothing happens if it is already complete) (what isn't spawned yet is dropped, as the capped baselines do, 02 §9), then one release batch for every live wave actor (`RequestRelease` refuses one already gone) |
+| `HandleBatchComplete(BatchId)` | Finds the record that owns the batch and clears it there; once that record's despawn was requested and **both** of its batches are complete, no actor of that wave is left: `DespawnComplete`, in the frame the last actor went |
+| `Tick` | For SPS it returns after the script: SpawnPacer works later in the frame and the completion events come from the callbacks above |
+| BenchEnd log | `SpawnPacer totals: … completed, … dropped, … cancelled`, so a run log shows that nothing went missing |
+
+### F4. Tests: `Tests\SpawnPacerTestFlags.h`, `Tests\SpawnPacerTestTypes.h/.cpp`, `Tests\SpawnPacerSubsystemTests.cpp`
+
+| Line | What it does, and why |
+|---|---|
+| `SpawnPacerTestFlags.h` | The shared `SpawnPacerTests::Flags` (Editor + Client, `ProductFilter`), now that two files need it; the policy tests include it |
+| `UCLASS(NotBlueprintable, NotPlaceable, HideDropdown) class ASpawnPacerTestActor` | A reflected test type must be in a header (UHT reads headers only); it exists in every configuration and is hidden from editor pickers, as the engine's own test classes are. A root `USceneComponent` so the spawn transform places something; it records `BeginPlayCalls`, whether `Initialize` had run when BeginPlay started, and runs an optional per-instance `OnBeginPlay` hook, which a test sets from the request's `Initialize` (it runs before BeginPlay in both modes) |
+| `FTestPacerWorld` | `FTestWorldWrapper` (06 §26): a Game world that has begun play, its `USpawnPacerSubsystem`, `Tick(N)` at 1/60 s, `TickUntilIdle()` (at most 1,000 frames, and no extra frame after, so a batch reported late would fail), `Request(Batch, Location)` with `AlwaysSpawn`. **Whatever the world's callbacks write to is declared before it**, so the world goes first |
+| `FBatchLog` | Counts `OnBatchComplete` per batch id |
+| `EveryRequestSpawnsOnceInBothModes` | Whole and Deferred, 20 requests: 20 spawned, 20 completed, 0 dropped, the batch completes once; each actor has begun play once, saw `Initialize` before BeginPlay, and stands at its own requested location (request order is kept) |
+| `ActorDestroyedBetweenStagesIsDropped` | Deferred. After one frame the actor is constructed but hasn't begun play (its `Finish` job is cold, so it waits: the S4 rule); destroyed behind SpawnPacer's back; then: 1 dropped, 0 completed, no `OnSpawned`, the batch still completes |
+| `SpawnFromInsideBeginPlay` | Both modes: the parent's BeginPlay requests a child; both complete, the child in a **later** frame than the parent (02 §8: a request made during a stage waits for the next frame) |
+| `WorldEndsWithRequestsPending` | 50 deferred requests, one frame (one half-spawned, 49 queued), then the world is destroyed: no `OnSpawned`, no batch event, no error. A **second** world then spawns normally: the first world's global handler was removed |
+| `CancelBatch` | 10 deferred requests, one half-spawned, then cancelled: 10 cancelled, 0 completed, no `OnSpawned`, no further construction, the half-spawned actor destroyed, the batch completes once |
+| `ReleaseDestroysTheActors` | 5 spawned, released as one batch: all destroyed, 10 completed (5 spawns + 5 releases), the batch completes once; `RequestRelease(nullptr)` is refused |
+| `HigherPriorityIsServedFirst` | Budget 0 (one job per frame): Background, Normal, High requested in that order are served High, Normal, Background |
+| `CancelFromInsideInitialize` | Both modes: `Initialize` cancels its own batch; the actor is destroyed and never finished, 1 cancelled, no `OnSpawned`, the batch completes once (the code-review case) |
+| `ReleaseOfAHalfSpawnedActor` | Deferred, one frame (constructed, not begun play), then released: still **one** pending request (the spawn became the release); the actor is destroyed, never finished; 1 cancelled (the spawn) + 1 completed (the release); both batches complete once |
+
+### F5. Tools (S5 additions)
+
+| Line | What it does, and why |
+|---|---|
+| `csv_stats.py`: `FORCED_COLUMN`, `cell_value`, the `active_work` pairs | For `SpawnPacer/WorkMs`, each frame's work is paired **row by row** with its `SpawnPacer/ForcedJobs` (both published in the same frame), so SC3 can list frames whose first job was predicted over the budget separately (01 §6.4): `forced` and `over_budget_unforced`. `cell_value` reads one cell as a number, 0 when missing |
+| `csv_stats.py`: `DEFAULT_COLUMNS` | Adds `SpawnPacer/SpawnMs`, `ConstructMs`, `FinishMs`, `DestroyMs` |
+| `csv_stats.py --selftest` | A hand-worked SpawnPacer case: work 3.0 (forced), 2.5, 1.0 at a 2 ms budget → 2 over, 1 forced, 1 over and not forced |
+| `run_bench.py`: `CONFIGS["SPS"] = "-SPConfig=SPS -SPBudgetMs=2.0"` | SpawnPacer at B2's budget |
+| `run_bench.py`: `PACER_CONFIGS`, `work_column(config)` | Each configuration's summary reads **its own** spawner's work column, never the first one that has data (code review) |
+| `run_bench.py`: the summary's last column | SC3 for SpawnPacer: over-budget frames that were **not** forced / forced frames (sums); `n/a` for the baselines, which predict nothing |

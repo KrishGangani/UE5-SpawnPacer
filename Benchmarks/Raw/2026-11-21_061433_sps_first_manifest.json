@@ -1,0 +1,1150 @@
+{
+  "environment": {
+    "date": "2026-11-21T06:14:33",
+    "engine": "5.8.4 (CL 58902052)",
+    "build_config": "Development (packaged)",
+    "compiler": "MSVC 14.44.35229, Windows SDK 10.0.22621.0",
+    "cpu": "Intel(R) Core(TM) i7-14650HX",
+    "gpus": "Intel(R) UHD Graphics (driver 32.0.101.7088); NVIDIA GeForce RTX 5070 Laptop GPU (driver 32.0.16.1047)",
+    "ram_gb": "31.6",
+    "os": "Microsoft Windows 11 Home Single Language build 26200",
+    "power_plan": "Power Scheme GUID: 6fecc5ae-f350-48a5-b669-b472cb895ccf  (Turbo)",
+    "on_ac_power": true,
+    "resolution": "1280x720 windowed, default scalability",
+    "common_args": "-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd",
+    "cpu_affinity": "0xFFFF (performance cores only; hybrid CPU)"
+  },
+  "arguments": {
+    "configs": "SPS",
+    "wave_size": 500,
+    "work": "20000",
+    "runs": 1,
+    "waves": 3,
+    "warmup": 5.0,
+    "cycle": 12.0,
+    "life": 6.0,
+    "gc_after": 2.0,
+    "seed": 1,
+    "extra": "",
+    "cooldown": 5.0,
+    "label": "sps_first",
+    "no_prime": false,
+    "dry_run": false,
+    "resummarize": null
+  },
+  "analysis_windows": {
+    "fps": 60.0,
+    "wave_window": 4.0,
+    "despawn_window": 2.0,
+    "gc_frames": 3,
+    "pre_window": 1.0
+  },
+  "runs": [
+    {
+      "name": "2026-11-21_061433_sps_first_SPS_W20000_r0_prime",
+      "config": "SPS",
+      "work": 20000,
+      "run": 0,
+      "priming": true,
+      "exit_code": 0,
+      "wall_seconds": 12.1,
+      "command": "\"D:\\UNREAL PORTFOLIO\\P02_SpawnPacer\\Build\\Windows\\SpawnPacer\\Binaries\\Win64\\SpawnPacer.exe\" -windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_061433_sps_first_SPS_W20000_r0_prime -SPWork=20000 -SPConfig=SPS -SPBudgetMs=2.0",
+      "capture": "2026-11-21_061433_sps_first_SPS_W20000_r0_prime.csv",
+      "finalised": true,
+      "events": {
+        "SPBench/WaveRequested": 3,
+        "PSO": 2,
+        "SPBench/WaveComplete": 3,
+        "SpawnPacer/BatchComplete 0": 1,
+        "SPBench/DespawnRequested": 3,
+        "SpawnPacer/BatchComplete 1": 1,
+        "SPBench/DespawnComplete": 3,
+        "SPBench/GCForced": 3,
+        "GC": 3,
+        "SpawnPacer/BatchComplete 2": 1,
+        "SpawnPacer/BatchComplete 3": 1,
+        "SpawnPacer/BatchComplete 4": 1,
+        "SpawnPacer/BatchComplete 5": 1,
+        "SPBench/BenchEnd": 1
+      },
+      "waves": 3,
+      "wave_latency_frames": [
+        54,
+        52,
+        50
+      ],
+      "windows": {
+        "W": {
+          "frames": 720,
+          "frame_time_frames": 720,
+          "columns": {
+            "FrameTime": {
+              "n": 720,
+              "mean": 3.835675277777778,
+              "min": 1.7267,
+              "median": 3.66685,
+              "p95": 5.160735,
+              "p99": 5.763264999999997,
+              "max": 7.0232
+            },
+            "GameThreadTime": {
+              "n": 720,
+              "mean": 3.6079147222222225,
+              "min": 2.3024,
+              "median": 3.37705,
+              "p95": 5.0658449999999995,
+              "p99": 5.740559999999995,
+              "max": 7.7413
+            },
+            "RenderThreadTime": {
+              "n": 720,
+              "mean": 3.4861829166666665,
+              "min": 2.2311,
+              "median": 3.4456499999999997,
+              "p95": 4.297534999999999,
+              "p99": 4.761698,
+              "max": 6.1702
+            },
+            "GPUTime": {
+              "n": 720,
+              "mean": 2.584830833333333,
+              "min": 2.1432,
+              "median": 2.56615,
+              "p95": 3.04699,
+              "p99": 3.1381349999999997,
+              "max": 3.1839
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 720,
+              "mean": 0.3851123611111111,
+              "min": 0.0005,
+              "median": 0.0007,
+              "p95": 1.8961849999999998,
+              "p99": 1.9639909999999998,
+              "max": 3.5526
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 720,
+              "mean": 0.16648694444444445,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 1.0074699999999999,
+              "p99": 1.4428409999999996,
+              "max": 1.5871
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 720,
+              "mean": 0.06657166666666667,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.4094399999999996,
+              "p99": 0.6344399999999987,
+              "max": 0.9218
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 720,
+              "mean": 0.14975777777777777,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.9251599999999999,
+              "p99": 1.1067909999999999,
+              "max": 2.6467
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 720,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 720,
+              "mean": 0.23180222222222224,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 1.2527049999999997,
+              "p99": 1.5613839999999997,
+              "max": 1.6948
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 507,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "active_work": {
+            "SpawnPacer/WorkMs": {
+              "n": 159,
+              "mean": 1.7412503144654086,
+              "min": 0.2138,
+              "median": 1.8165,
+              "p95": 1.9632100000000001,
+              "p99": 2.1269679999999997,
+              "max": 3.5526,
+              "over_budget": 1,
+              "forced": 0,
+              "over_budget_unforced": 1
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "D": {
+          "frames": 360,
+          "frame_time_frames": 360,
+          "columns": {
+            "FrameTime": {
+              "n": 360,
+              "mean": 2.9934202777777776,
+              "min": 2.0629,
+              "median": 2.8168,
+              "p95": 4.350440000000001,
+              "p99": 6.104754000000015,
+              "max": 7.199
+            },
+            "GameThreadTime": {
+              "n": 360,
+              "mean": 1.3493941666666667,
+              "min": 0.8866,
+              "median": 1.093,
+              "p95": 2.8599500000000018,
+              "p99": 6.062976000000018,
+              "max": 7.072
+            },
+            "RenderThreadTime": {
+              "n": 360,
+              "mean": 2.921743055555556,
+              "min": 2.3065,
+              "median": 2.8147,
+              "p95": 3.742105,
+              "p99": 4.410586,
+              "max": 5.2028
+            },
+            "GPUTime": {
+              "n": 360,
+              "mean": 2.345883888888889,
+              "min": 2.0652,
+              "median": 2.2696,
+              "p95": 2.8343450000000003,
+              "p99": 3.100250000000001,
+              "max": 3.419
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 360,
+              "mean": 0.0648061111111111,
+              "min": 0.0004,
+              "median": 0.0006,
+              "p95": 0.001405000000000001,
+              "p99": 2.021128,
+              "max": 2.0289
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 360,
+              "mean": 0.06310333333333334,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 1.9878790000000002,
+              "max": 1.994
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 360,
+              "mean": 0.06219444444444445,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 1.962115,
+              "max": 1.9665
+            }
+          },
+          "active_work": {
+            "SpawnPacer/WorkMs": {
+              "n": 15,
+              "mean": 1.54136,
+              "min": 0.1115,
+              "median": 2.0082,
+              "p95": 2.0270099999999998,
+              "p99": 2.028522,
+              "max": 2.0289,
+              "over_budget": 0,
+              "forced": 0,
+              "over_budget_unforced": 0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "GC": {
+          "frames": 9,
+          "frame_time_frames": 9,
+          "columns": {
+            "FrameTime": {
+              "n": 9,
+              "mean": 4.766744444444445,
+              "min": 2.5238,
+              "median": 3.79,
+              "p95": 7.2559000000000005,
+              "p99": 7.26998,
+              "max": 7.2735
+            },
+            "GameThreadTime": {
+              "n": 9,
+              "mean": 3.3424555555555555,
+              "min": 1.0731,
+              "median": 1.5977,
+              "p95": 7.11666,
+              "p99": 7.3262920000000005,
+              "max": 7.3787
+            },
+            "RenderThreadTime": {
+              "n": 9,
+              "mean": 3.6534666666666666,
+              "min": 2.7781,
+              "median": 3.4433,
+              "p95": 5.387919999999999,
+              "p99": 5.877744,
+              "max": 6.0002
+            },
+            "GPUTime": {
+              "n": 9,
+              "mean": 2.1680333333333333,
+              "min": 2.0988,
+              "median": 2.1121,
+              "p95": 2.2932,
+              "p99": 2.2932,
+              "max": 2.2932
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 9,
+              "mean": 0.0007444444444444444,
+              "min": 0.0005,
+              "median": 0.0006,
+              "p95": 0.0013599999999999999,
+              "p99": 0.001392,
+              "max": 0.0014
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "PRE": {
+          "frames": 120,
+          "frame_time_frames": 121,
+          "columns": {
+            "FrameTime": {
+              "n": 121,
+              "mean": 3.0864545454545453,
+              "min": 1.892,
+              "median": 3.0297,
+              "p95": 3.8542,
+              "p99": 4.02062,
+              "max": 6.7747
+            },
+            "GameThreadTime": {
+              "n": 120,
+              "mean": 1.2056758333333333,
+              "min": 0.8736,
+              "median": 1.1757499999999999,
+              "p95": 1.683895,
+              "p99": 1.794745,
+              "max": 1.9512
+            },
+            "RenderThreadTime": {
+              "n": 120,
+              "mean": 3.047745,
+              "min": 2.3862,
+              "median": 3.00755,
+              "p95": 3.65575,
+              "p99": 4.0176989999999995,
+              "max": 4.03
+            },
+            "GPUTime": {
+              "n": 120,
+              "mean": 2.306404166666667,
+              "min": 2.0594,
+              "median": 2.2664,
+              "p95": 2.787535,
+              "p99": 2.850527,
+              "max": 2.8805
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 120,
+              "mean": 0.0007133333333333333,
+              "min": 0.0004,
+              "median": 0.0007,
+              "p95": 0.0011049999999999999,
+              "p99": 0.0016,
+              "max": 0.0021
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        }
+      },
+      "metadata": {
+        "hasheaderrowatend": "1",
+        "eventtimestamps": "1",
+        "platform": "Windows",
+        "config": "Development",
+        "buildversion": "++UE5+Release-5.8-CL-58902052",
+        "engineversion": "5.8.4-58902052+++UE5+Release-5.8",
+        "enginereleaseversion": "5.8.4",
+        "os": "Windows 11 (25H2) [10.0.26200.9974]",
+        "cpu": "GenuineIntel|Intel(R) Core(TM) i7-14650HX",
+        "pgoenabled": "0",
+        "pgoprofilingenabled": "0",
+        "ltoenabled": "0",
+        "asan": "0",
+        "mergedmodules": "0",
+        "compacttset": "0",
+        "loginid": "cb4377c742481910ba0f5999e88874c8",
+        "llm": "0",
+        "zenstreaming": "0",
+        "systemresolution.resx": "1280",
+        "systemresolution.resy": "720",
+        "extradevelopmentmemorymb": "0",
+        "verbatimrhiname": "D3D12",
+        "rhiname": "D3D12",
+        "rhifeaturelevel": "SM6",
+        "shaderplatform": "PCD3D_SM6",
+        "gpu": "NVIDIA GeForce RTX 5070 Laptop GPU",
+        "gpudriver": "610.47",
+        "deviceprofile": "Windows",
+        "largeworldcoordinates": "1",
+        "raytracing": "0",
+        "spruntag": "2026-11-21_061433_sps_first_SPS_W20000_r0_prime",
+        "spconfig": "SPS",
+        "spcountcap": "25",
+        "spbudgetms": "2.0",
+        "spwavesize": "500",
+        "spwaves": "3",
+        "spseed": "1",
+        "spwork": "20000",
+        "spwavehash": "0x29FD2F1C",
+        "spcycle": "12.0",
+        "splife": "6.0",
+        "spgcafter": "2.0",
+        "streamingpoolsizemb": "1000",
+        "csvid": "7B12D103474E50F9B6FDA5A4AA2126F8",
+        "targetframerate": "165",
+        "starttimestamp": "1795221879",
+        "namedevents": "0",
+        "hasgtstalls": "0",
+        "vsyncenabled": "0",
+        "csvbench_timingstat_ns": "48.065000",
+        "csvbench_customstat_ns": "30.357500",
+        "csvbench_duration_ms": "3.137100",
+        "endtimestamp": "1795221886",
+        "captureduration": "7.340332",
+        "csvmaxfilebytesreached": "0",
+        "commandline": "-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_061433_sps_first_SPS_W20000_r0_prime -SPWork=20000 -SPConfig=SPS -SPBudgetMs=2.0"
+      },
+      "run_report": "2026-11-21_061433_sps_first_SPS_W20000_r0_prime_report.csv",
+      "log_errors": 0,
+      "log_warnings": 0
+    },
+    {
+      "name": "2026-11-21_061433_sps_first_SPS_W20000_r1",
+      "config": "SPS",
+      "work": 20000,
+      "run": 1,
+      "priming": false,
+      "exit_code": 0,
+      "wall_seconds": 11.1,
+      "command": "\"D:\\UNREAL PORTFOLIO\\P02_SpawnPacer\\Build\\Windows\\SpawnPacer\\Binaries\\Win64\\SpawnPacer.exe\" -windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_061433_sps_first_SPS_W20000_r1 -SPWork=20000 -SPConfig=SPS -SPBudgetMs=2.0",
+      "capture": "2026-11-21_061433_sps_first_SPS_W20000_r1.csv",
+      "finalised": true,
+      "events": {
+        "SPBench/WaveRequested": 3,
+        "PSO": 2,
+        "SPBench/WaveComplete": 3,
+        "SpawnPacer/BatchComplete 0": 1,
+        "SPBench/DespawnRequested": 3,
+        "SpawnPacer/BatchComplete 1": 1,
+        "SPBench/DespawnComplete": 3,
+        "SPBench/GCForced": 3,
+        "GC": 3,
+        "SpawnPacer/BatchComplete 2": 1,
+        "SpawnPacer/BatchComplete 3": 1,
+        "SpawnPacer/BatchComplete 4": 1,
+        "SpawnPacer/BatchComplete 5": 1,
+        "SPBench/BenchEnd": 1
+      },
+      "waves": 3,
+      "wave_latency_frames": [
+        47,
+        55,
+        47
+      ],
+      "windows": {
+        "W": {
+          "frames": 720,
+          "frame_time_frames": 720,
+          "columns": {
+            "FrameTime": {
+              "n": 720,
+              "mean": 3.9016791666666664,
+              "min": 1.5392,
+              "median": 3.75015,
+              "p95": 5.115815,
+              "p99": 5.875682999999998,
+              "max": 6.5925
+            },
+            "GameThreadTime": {
+              "n": 720,
+              "mean": 3.6798455555555556,
+              "min": 2.2652,
+              "median": 3.4389000000000003,
+              "p95": 5.077869999999999,
+              "p99": 5.942767999999997,
+              "max": 6.9702
+            },
+            "RenderThreadTime": {
+              "n": 720,
+              "mean": 3.5978363888888887,
+              "min": 2.5521,
+              "median": 3.53105,
+              "p95": 4.5332,
+              "p99": 5.040026999999998,
+              "max": 5.7318
+            },
+            "GPUTime": {
+              "n": 720,
+              "mean": 2.5550106944444444,
+              "min": 2.0712,
+              "median": 2.5327,
+              "p95": 3.02225,
+              "p99": 3.111849,
+              "max": 3.4012
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 720,
+              "mean": 0.37430027777777775,
+              "min": 0.0005,
+              "median": 0.0008,
+              "p95": 1.904315,
+              "p99": 1.957305,
+              "max": 2.3454
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 720,
+              "mean": 0.16416277777777777,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 1.034,
+              "p99": 1.4294379999999995,
+              "max": 1.8137
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 720,
+              "mean": 0.06318847222222222,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.3797999999999999,
+              "p99": 0.5774369999999995,
+              "max": 0.777
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 720,
+              "mean": 0.14476916666666667,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.9254399999999999,
+              "p99": 1.1091829999999998,
+              "max": 1.2542
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 720,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 720,
+              "mean": 0.22608333333333333,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 1.277495,
+              "p99": 1.5363599999999993,
+              "max": 1.7993
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 505,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "active_work": {
+            "SpawnPacer/WorkMs": {
+              "n": 152,
+              "mean": 1.7700776315789475,
+              "min": 0.1923,
+              "median": 1.8245,
+              "p95": 1.957125,
+              "p99": 2.1762220000000014,
+              "max": 2.3454,
+              "over_budget": 2,
+              "forced": 0,
+              "over_budget_unforced": 2
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "D": {
+          "frames": 360,
+          "frame_time_frames": 360,
+          "columns": {
+            "FrameTime": {
+              "n": 360,
+              "mean": 2.953951944444445,
+              "min": 1.6309,
+              "median": 2.818,
+              "p95": 3.7347800000000015,
+              "p99": 6.275920000000002,
+              "max": 7.2655
+            },
+            "GameThreadTime": {
+              "n": 360,
+              "mean": 1.3067905555555555,
+              "min": 0.8351,
+              "median": 1.0865,
+              "p95": 2.237710000000007,
+              "p99": 6.127036000000002,
+              "max": 7.262
+            },
+            "RenderThreadTime": {
+              "n": 360,
+              "mean": 2.894365555555556,
+              "min": 2.2528,
+              "median": 2.7913,
+              "p95": 3.6089950000000006,
+              "p99": 4.319860000000005,
+              "max": 5.0827
+            },
+            "GPUTime": {
+              "n": 360,
+              "mean": 2.3220280555555557,
+              "min": 2.0527,
+              "median": 2.2737,
+              "p95": 2.7941849999999997,
+              "p99": 2.9536810000000013,
+              "max": 3.1273
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 360,
+              "mean": 0.06564666666666666,
+              "min": 0.0004,
+              "median": 0.0006,
+              "p95": 0.0011100000000000023,
+              "p99": 2.023482,
+              "max": 2.0283
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 360,
+              "mean": 0.06390805555555555,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 1.9897,
+              "max": 1.9943
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 360,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 360,
+              "mean": 0.06305083333333333,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 1.959333,
+              "max": 1.9706
+            }
+          },
+          "active_work": {
+            "SpawnPacer/WorkMs": {
+              "n": 14,
+              "mean": 1.672192857142857,
+              "min": 0.0931,
+              "median": 2.00885,
+              "p95": 2.0257650000000003,
+              "p99": 2.0277930000000004,
+              "max": 2.0283,
+              "over_budget": 0,
+              "forced": 0,
+              "over_budget_unforced": 0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "GC": {
+          "frames": 9,
+          "frame_time_frames": 9,
+          "columns": {
+            "FrameTime": {
+              "n": 9,
+              "mean": 5.483766666666667,
+              "min": 3.2894,
+              "median": 4.9631,
+              "p95": 7.8185,
+              "p99": 7.90202,
+              "max": 7.9229
+            },
+            "GameThreadTime": {
+              "n": 9,
+              "mean": 3.7007111111111115,
+              "min": 1.1877,
+              "median": 1.7972,
+              "p95": 7.61444,
+              "p99": 7.667847999999999,
+              "max": 7.6812
+            },
+            "RenderThreadTime": {
+              "n": 9,
+              "mean": 4.3819,
+              "min": 3.2828,
+              "median": 3.8269,
+              "p95": 5.78286,
+              "p99": 5.869292000000001,
+              "max": 5.8909
+            },
+            "GPUTime": {
+              "n": 9,
+              "mean": 2.2670666666666666,
+              "min": 2.1224,
+              "median": 2.3006,
+              "p95": 2.3782,
+              "p99": 2.3782,
+              "max": 2.3782
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 9,
+              "mean": 0.0008555555555555556,
+              "min": 0.0006,
+              "median": 0.0008,
+              "p95": 0.0013799999999999997,
+              "p99": 0.0016359999999999999,
+              "max": 0.0017
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 9,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        },
+        "PRE": {
+          "frames": 120,
+          "frame_time_frames": 121,
+          "columns": {
+            "FrameTime": {
+              "n": 121,
+              "mean": 2.914982644628099,
+              "min": 2.2838,
+              "median": 2.8149,
+              "p95": 3.3986,
+              "p99": 3.5055,
+              "max": 8.8985
+            },
+            "GameThreadTime": {
+              "n": 120,
+              "mean": 1.142255,
+              "min": 0.8809,
+              "median": 1.10725,
+              "p95": 1.469085,
+              "p99": 1.625661,
+              "max": 1.9613
+            },
+            "RenderThreadTime": {
+              "n": 120,
+              "mean": 2.8618058333333334,
+              "min": 2.338,
+              "median": 2.8127500000000003,
+              "p95": 3.32602,
+              "p99": 3.401364,
+              "max": 3.4381
+            },
+            "GPUTime": {
+              "n": 120,
+              "mean": 2.291325,
+              "min": 2.0831,
+              "median": 2.21035,
+              "p95": 2.76179,
+              "p99": 2.844358,
+              "max": 2.926
+            },
+            "SpawnPacer/WorkMs": {
+              "n": 120,
+              "mean": 0.0007016666666666666,
+              "min": 0.0005,
+              "median": 0.0006,
+              "p95": 0.0012099999999999993,
+              "p99": 0.0014810000000000003,
+              "max": 0.0016
+            },
+            "SpawnPacer/SpawnMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/ConstructMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/FinishMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "SpawnPacer/DestroyMs": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorSpawning": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "Exclusive/GameThread/ActorDestroying": {
+              "n": 120,
+              "mean": 0.0,
+              "min": 0.0,
+              "median": 0.0,
+              "p95": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          },
+          "over_33_3ms": 0,
+          "over_16_7ms": 0
+        }
+      },
+      "metadata": {
+        "hasheaderrowatend": "1",
+        "eventtimestamps": "1",
+        "platform": "Windows",
+        "config": "Development",
+        "buildversion": "++UE5+Release-5.8-CL-58902052",
+        "engineversion": "5.8.4-58902052+++UE5+Release-5.8",
+        "enginereleaseversion": "5.8.4",
+        "os": "Windows 11 (25H2) [10.0.26200.9974]",
+        "cpu": "GenuineIntel|Intel(R) Core(TM) i7-14650HX",
+        "pgoenabled": "0",
+        "pgoprofilingenabled": "0",
+        "ltoenabled": "0",
+        "asan": "0",
+        "mergedmodules": "0",
+        "compacttset": "0",
+        "loginid": "cb4377c742481910ba0f5999e88874c8",
+        "llm": "0",
+        "zenstreaming": "0",
+        "systemresolution.resx": "1280",
+        "systemresolution.resy": "720",
+        "extradevelopmentmemorymb": "0",
+        "verbatimrhiname": "D3D12",
+        "rhiname": "D3D12",
+        "rhifeaturelevel": "SM6",
+        "shaderplatform": "PCD3D_SM6",
+        "gpu": "NVIDIA GeForce RTX 5070 Laptop GPU",
+        "gpudriver": "610.47",
+        "deviceprofile": "Windows",
+        "largeworldcoordinates": "1",
+        "raytracing": "0",
+        "spruntag": "2026-11-21_061433_sps_first_SPS_W20000_r1",
+        "spconfig": "SPS",
+        "spcountcap": "25",
+        "spbudgetms": "2.0",
+        "spwavesize": "500",
+        "spwaves": "3",
+        "spseed": "1",
+        "spwork": "20000",
+        "spwavehash": "0x29FD2F1C",
+        "spcycle": "12.0",
+        "splife": "6.0",
+        "spgcafter": "2.0",
+        "streamingpoolsizemb": "1000",
+        "csvid": "9A0F1ADA4CC5C446256A65B92690482B",
+        "targetframerate": "165",
+        "starttimestamp": "1795221895",
+        "namedevents": "0",
+        "hasgtstalls": "0",
+        "vsyncenabled": "0",
+        "csvbench_timingstat_ns": "48.750000",
+        "csvbench_customstat_ns": "78.400000",
+        "csvbench_duration_ms": "5.086100",
+        "endtimestamp": "1795221903",
+        "captureduration": "7.314425",
+        "csvmaxfilebytesreached": "0",
+        "commandline": "-windowed -ResX=1280 -ResY=720 -nosound -unattended -traceautostart=0 -deterministic -FPS=60 -novsync -SPExit -csvStartOnEvent=BenchStart -csvStopOnEvent=BenchEnd -SPWaveSize=500 -SPWaves=3 -SPSeed=1 -SPWarmup=5.0 -SPCycle=12.0 -SPLife=6.0 -SPGCAfter=2.0 -SPRunTag=2026-11-21_061433_sps_first_SPS_W20000_r1 -SPWork=20000 -SPConfig=SPS -SPBudgetMs=2.0"
+      },
+      "run_report": "2026-11-21_061433_sps_first_SPS_W20000_r1_report.csv",
+      "log_errors": 0,
+      "log_warnings": 0
+    }
+  ]
+}

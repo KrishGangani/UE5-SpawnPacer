@@ -1,17 +1,15 @@
 // SpawnPacerCore - unit tests for the policy (FSpawnCostModel, FSpawnPacerScheduler): fake jobs, fake costs, no world.
 // Run with: Tools\run_tests.py (through the machine queue), filter "SpawnPacer.Policy".
 
-#include "Misc/AutomationTest.h"
 #include "SpawnCostModel.h"
 #include "SpawnPacerScheduler.h"
+#include "Tests/SpawnPacerTestFlags.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace SpawnPacerTests
 {
 	constexpr double Tolerance = 1e-9;
-	/** Editor and game contexts; one filter (ProductFilter: a project's own tests), as the macro requires. */
-	constexpr EAutomationTestFlags Flags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter;
 
 	/** A key for a stage; the class is irrelevant to the policy, any UClass will do. */
 	FSpawnCostKey Key(ESpawnPacerStage Stage, FName Component = NAME_None)

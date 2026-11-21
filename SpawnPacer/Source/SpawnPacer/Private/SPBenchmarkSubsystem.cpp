@@ -16,6 +16,7 @@
 #include "Misc/Paths.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "SPWaveActor.h"
+#include "SpawnPacerSubsystem.h"
 #include "Stats/Stats.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SPBenchmarkSubsystem)
@@ -91,12 +92,17 @@ TOptional<ESPBaseline> USPBenchmarkSubsystem::ParseBaseline(const FString& Confi
 	return {};
 }
 
+bool USPBenchmarkSubsystem::IsPacerConfig(const FString& Config)
+{
+	return Config == TEXT("SPS");
+}
+
 bool USPBenchmarkSubsystem::ValidateRunSettings() const
 {
 	bool bValid = true;
-	if (!ParseBaseline(Settings.Config).IsSet())
+	if (!ParseBaseline(Settings.Config).IsSet() && !IsPacerConfig(Settings.Config))
 	{
-		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3)."), *Settings.Config);
+		UE_LOG(LogSPBench, Error, TEXT("-SPConfig=%s is not a known configuration (B0, B1, B2, B3, SPS)."), *Settings.Config);
 		bValid = false;
 	}
 	if (Settings.CountCap < 1 || Settings.BudgetMs <= 0.0)
@@ -145,11 +151,23 @@ void USPBenchmarkSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	const int32 EffectiveWork = WorkVariable ? WorkVariable->GetInt() : -1;
 
 	WaveHash = BuildWave();
-	Baseline = NewObject<USPBaselineSpawner>(this);
 	if (const TOptional<ESPBaseline> Mode = ParseBaseline(Settings.Config))
 	{
+		Baseline = NewObject<USPBaselineSpawner>(this);
 		Baseline->Configure(*Mode, Settings.CountCap, Settings.BudgetMs);
 		bPoolToFill = (*Mode == ESPBaseline::B3);
+	}
+	else
+	{
+		// SPS. The demo's split modes (02 section 7): grunts and bosses Deferred, so their BeginPlay work can land in a
+		// later frame than their registration; drones and crates Whole. The boss becomes PerComponent in S6. Until the
+		// settings of S9 exist, the director sets the rules itself.
+		Pacer = InWorld.GetSubsystem<USpawnPacerSubsystem>();
+		check(Pacer); // the plugin is a hard dependency of this module, and this is a Game or PIE world
+		Pacer->SetBudgetMs(Settings.BudgetMs);
+		Pacer->SetClassRule(ASPGrunt::StaticClass(), ESpawnPacerSplitMode::Deferred);
+		Pacer->SetClassRule(ASPBoss::StaticClass(), ESpawnPacerSplitMode::Deferred);
+		Pacer->OnBatchComplete.AddUObject(this, &USPBenchmarkSubsystem::HandleBatchComplete);
 	}
 	Camera = InWorld.SpawnActor<ACameraActor>(SPBench::CameraLocation, SPBench::CameraRotation);
 	BeginPlayTime = InWorld.GetTimeSeconds();
@@ -249,7 +267,14 @@ void USPBenchmarkSubsystem::StepScript(double SecondsInCapture)
 			Record.RequestFrame = Frame;
 			Record.RequestTime = Now;
 			ReadyThisWave = 0;
-			Baseline->RequestWave(Wave);
+			if (Baseline)
+			{
+				Baseline->RequestWave(Wave);
+			}
+			else
+			{
+				RequestPacedWave(Record);
+			}
 			CSV_EVENT(SPBench, TEXT("WaveRequested"));
 			NextStep = ECycleStep::Despawn;
 		}
@@ -259,7 +284,14 @@ void USPBenchmarkSubsystem::StepScript(double SecondsInCapture)
 		if (InCycle >= Settings.LifeSeconds)
 		{
 			WaveRecords.Last().DespawnRequestFrame = Frame;
-			Baseline->RequestDespawn();
+			if (Baseline)
+			{
+				Baseline->RequestDespawn();
+			}
+			else
+			{
+				RequestPacedDespawn(WaveRecords.Last());
+			}
 			CSV_EVENT(SPBench, TEXT("DespawnRequested"));
 			NextStep = ECycleStep::ForceGC;
 		}
@@ -338,6 +370,12 @@ void USPBenchmarkSubsystem::Tick(float DeltaTime)
 			Phase = ERunPhase::Done;
 			FramesSinceEnd = 0;
 			UE_LOG(LogSPBench, Display, TEXT("BenchEnd after %d waves"), Settings.Waves);
+			if (Pacer)
+			{
+				const FSpawnPacerTotals& Totals = Pacer->GetTotals();
+				UE_LOG(LogSPBench, Display, TEXT("SpawnPacer totals: %d completed, %d dropped, %d cancelled"),
+					Totals.Completed, Totals.Dropped, Totals.Cancelled);
+			}
 			break;
 		}
 		StepScript(Now - BenchStartTime);
@@ -359,25 +397,104 @@ void USPBenchmarkSubsystem::Tick(float DeltaTime)
 		break;
 	}
 
+	if (!Baseline)
+	{
+		return; // SPS: SpawnPacer works later in this frame (after every tick); completion comes from its callbacks
+	}
+
 	// The spawner works in the same frame as the request that triggered it (SPBaselineSpawner.h).
 	Baseline->RunFrame(*World);
 
-	// Completion is checked after the spawner ran, so a wave finished this frame is reported this frame.
+	// Checked after the spawner ran, so a despawn finished this frame is reported this frame.
 	if (!WaveRecords.IsEmpty())
 	{
 		FWaveRecord& Record = WaveRecords.Last();
-		Record.Ready = ReadyThisWave; // kept current, so an incomplete wave still reports how many actors became ready
-		if (Record.CompleteTime < 0.0 && ReadyThisWave >= Wave.Num())
-		{
-			Record.CompleteFrame = GFrameCounter;
-			Record.CompleteTime = Now;
-			CSV_EVENT(SPBench, TEXT("WaveComplete"));
-		}
 		if (Record.DespawnRequestFrame != 0 && Record.DespawnCompleteFrame == 0 && Baseline->IsIdle() && Baseline->GetNumLive() == 0)
 		{
 			Record.DespawnCompleteFrame = GFrameCounter;
 			CSV_EVENT(SPBench, TEXT("DespawnComplete"));
 		}
+	}
+}
+
+void USPBenchmarkSubsystem::NotifyActorReady()
+{
+	++ReadyThisWave;
+	if (WaveRecords.IsEmpty())
+	{
+		return; // B3's pool fill during the warm-up
+	}
+	FWaveRecord& Record = WaveRecords.Last();
+	Record.Ready = ReadyThisWave; // kept current, so an incomplete wave still reports how many actors became ready
+	if (Record.CompleteTime < 0.0 && ReadyThisWave >= Wave.Num())
+	{
+		Record.CompleteFrame = GFrameCounter;
+		Record.CompleteTime = GetWorld()->GetTimeSeconds();
+		CSV_EVENT(SPBench, TEXT("WaveComplete"));
+	}
+}
+
+void USPBenchmarkSubsystem::RequestPacedWave(FWaveRecord& Record)
+{
+	PacedLive.Reset(Wave.Num());
+	Record.PacerWaveBatch = Pacer->CreateBatch();
+	const TWeakObjectPtr<USPBenchmarkSubsystem> WeakThis(this);
+	for (const FSPWaveEntry& Entry : Wave)
+	{
+		FSpawnPacerSpawnParams Params;
+		Params.Class = Entry.Class;
+		Params.Transform = Entry.Transform;
+		Params.BatchId = Record.PacerWaveBatch;
+		Params.CollisionHandling = ESpawnActorCollisionHandlingMethod::AlwaysSpawn; // as every baseline (05 D1)
+		Params.OnSpawned = [WeakThis](AActor& Actor)
+		{
+			if (USPBenchmarkSubsystem* Self = WeakThis.Get())
+			{
+				Self->PacedLive.Add(CastChecked<ASPWaveActor>(&Actor));
+			}
+		};
+		Pacer->RequestSpawn(MoveTemp(Params));
+	}
+}
+
+void USPBenchmarkSubsystem::RequestPacedDespawn(FWaveRecord& Record)
+{
+	// What the wave batch hasn't spawned yet is cancelled (a half-spawned actor is destroyed by its own job), as the
+	// capped baselines drop what they haven't brought in (02 section 9). Nothing to cancel once the batch is complete.
+	Pacer->CancelBatch(Record.PacerWaveBatch);
+	Record.PacerDespawnBatch = Pacer->CreateBatch();
+	for (const TWeakObjectPtr<ASPWaveActor>& Actor : PacedLive)
+	{
+		Pacer->RequestRelease(Actor.Get(), ESpawnPacerPriority::Normal, Record.PacerDespawnBatch); // refuses one already gone
+	}
+	PacedLive.Reset();
+}
+
+void USPBenchmarkSubsystem::HandleBatchComplete(int32 BatchId)
+{
+	// The record that owns the batch, not simply the last one: a slow despawn may complete after the next wave began.
+	for (FWaveRecord& Record : WaveRecords)
+	{
+		if (Record.PacerWaveBatch == BatchId)
+		{
+			Record.PacerWaveBatch = INDEX_NONE;
+		}
+		else if (Record.PacerDespawnBatch == BatchId)
+		{
+			Record.PacerDespawnBatch = INDEX_NONE;
+		}
+		else
+		{
+			continue;
+		}
+		// No actor of the wave is left once nothing of either batch is outstanding.
+		if (Record.DespawnRequestFrame != 0 && Record.DespawnCompleteFrame == 0
+			&& Record.PacerWaveBatch == INDEX_NONE && Record.PacerDespawnBatch == INDEX_NONE)
+		{
+			Record.DespawnCompleteFrame = GFrameCounter;
+			CSV_EVENT(SPBench, TEXT("DespawnComplete"));
+		}
+		return;
 	}
 }
 

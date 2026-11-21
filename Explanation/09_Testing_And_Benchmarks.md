@@ -209,6 +209,64 @@ Job `20261121_041329_4292c1`: build the editor and game Development targets, the
 - Tests flags: `ProductFilter` (a project's tests) with Editor and Client contexts, as UE5-UpdateBudget's tests use.
 - Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
 
+
+---
+
+## Step S5 · Subsystem, staged spawn, and the first SPS run (2026-11-21)
+
+Job `20261121_051002_175d01`: build both Development targets; `run_tests.py --filter SpawnPacer --expect 17`; package; then batch **`2026-11-21_061433_sps_first`** (SPS × 1 run + 1 priming run; wave 500, work 20000, budget 2.0 ms; grunts and bosses `Deferred`, drones and crates `Whole`). Environment as in S1–S3 (`applied_mask` 0xFFFF, AC power, Turbo).
+
+| # | Check | Result |
+|---|---|---|
+| S5-a | **Build** | ✅ Editor and game `Result: Succeeded`, **0 errors, 0 warnings**; package `BUILD SUCCESSFUL`, cook 0 errors, 0 warnings |
+| S5-b | **17 tests, all passed** | ✅ 8 policy (S4) + 9 subsystem tests (05 F4), `editor exit code 0` |
+| S5-c | **The run is valid and the same workload** | ✅ exit 0, 3 waves, every wave complete, 0 log errors or warnings; wave hash `0x29FD2F1C`, the same as every baseline run; `SpawnPacer totals: 3000 completed, 0 dropped, 0 cancelled` (1,500 spawns + 1,500 releases) |
+
+The roadmap's three named tests are `ActorDestroyedBetweenStagesIsDropped`, `SpawnFromInsideBeginPlay` and `WorldEndsWithRequestsPending`. The other six check both split modes, cancellation (including from inside a request's own callback), release (including of a half-spawned actor) and priorities.
+
+**The first SPS run against the S3 baselines** (one run, so no spread yet; ms; summary [2026-11-21_061433_sps_first](../Benchmarks/Summaries/2026-11-21_061433_sps_first_summary.md)):
+
+| | SPS (1 run) | B2, the time cap (4 runs, 09 S3) | B1, the count cap |
+|---|---|---|---|
+| W max FrameTime | **6.59** | 7.57 [6.40–8.07] | 8.81 [7.95–11.33] |
+| W p99 FrameTime | 5.88 | 6.42 [5.98–6.73] | — |
+| Frames > 33.3 ms (W and D) | **0** | 0 | 0 |
+| Spawn frames per run (W) | 152 | 132 | 108 |
+| Spawn work p99 / max | **2.18 / 2.35** | 2.60 / 2.75 | 4.40 / 4.63 |
+| Spawn frames > 1.1 × budget | **2 of 152 (1.3%)**, neither forced | 197 of 528 (37%) | 320 of 432 (74%) |
+| Wave latency, frames (per wave) | 47, 55, 47 | 42 [41–43] | 35 |
+| Spawn work per wave | 81 / 100 / 88 ms | 95 ms | 98 ms |
+| Mean work in a spawn frame (utilisation of 2 ms) | 1.69–1.83 ms (**0.85–0.92**) | about 2.16 ms (1.08) | — |
+
+**Against the targets of 01 §6.4, on this one run (the matrix decides):**
+- **SC1 ✅:** 0 frames over 33.3 ms in W and D.
+- **SC2, not yet:**
+  - the max (6.59 ms) is far below B0, B1 and B3 but inside B2's run range, so it isn't separated;
+  - the p99 (5.88 ms) is 0.07 ms over its bound (pre-wave median 2.81 + budget 2.0 + 1.0 = 5.81 ms).
+- **SC3, narrowly missed:** 98.7% of spawn frames within 1.1 × budget, against the ≥ 99% target (B2: 63%, B1: 26%).
+  - Both overruns are in wave 3, not in the cold start, and neither was forced.
+  - In one, 3 jobs predicted at 0.75 ms together took 2.35 ms: an outlier no history predicts.
+  - The other ran 14 jobs to 2.27 ms.
+- **SC4 ✅ on utilisation (0.85–0.92 ≥ 0.75), and latency is the price, as stated:** 47–55 frames against B2's 42.
+  - The summed predictions were about 1.6 × the measured work (K = 2): headroom that buys adherence and costs frames.
+  - That trade-off is what the K sweep of Phase 8 measures. Nothing is tuned to this run.
+- The deferred split's own cost is small: per wave, `ConstructMs` + `FinishMs` = 46–55 ms for the 100 deferred enemies, and `SpawnMs` = 35–45 ms for the 400 whole ones.
+
+**Audit trail for S5:**
+- `code-review` (medium) on the diff: 5 findings, 3 important + 2 nits, **all fixed**, with 2 new tests:
+  - **important:** a cancel from inside a request's own Construct job left the actor half-spawned. Cancellation is now a flag, resolved from the request's state when it reaches the head (05 F2; test `CancelFromInsideInitialize`);
+  - **important:** releasing a half-spawned actor queued a second request that raced its Finish job. The spawn request itself now becomes the release, as 02 §8 requires (test `ReleaseOfAHalfSpawnedActor`);
+  - **important:** the plugin's subsystem ran and published in every Game world, so an idle 0.01 ms frame could be read as a baseline's spawn work. It now does nothing until first used, and the summary reads each configuration's own column (05 F2, F5);
+  - a release whose actor was already gone counted as completed: now `Dropped`;
+  - the director kept one pair of batch ids, so a late despawn could be written to the next cycle's record: now per record (05 F3).
+- `simplify` (self-review, four angles): one candidate (sharing a struct between the per-frame and total outcome counters) **skipped**, because it made `End()` harder to read for three fields. No other change.
+- **Two design changes, recorded in 02 §15:**
+  - SpawnPacer works on `OnWorldPostActorTick` instead of as a tickable, so requests are always served in the frame they are made. This resolves the one-frame risk 02 §15 recorded in S1.
+  - "Whole" with an `Initialize` callback is a deferred spawn finished in the same job (the same engine work, `Actor.cpp:4357–4360`).
+- The director's wave completion moved into `NotifyActorReady()`. For the baselines this is the same frame as before, so their results stand.
+- The S3 baseline summary was rebuilt with `--resummarize` for the new SC3 column. Every earlier cell is unchanged and the new one is `n/a`.
+- Audits before the commit: `check_links.py` 0 problems; no banned words, personal paths or emails; no stray control characters; `git status` shows only this project's files.
+
 ---
 
 ## Phases 5–8 (to be written)

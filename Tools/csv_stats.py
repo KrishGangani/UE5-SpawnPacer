@@ -50,6 +50,10 @@ DEFAULT_COLUMNS = (
     "SPBaseline/ConstructMs",
     "SPBaseline/FinishMs",
     "SpawnPacer/WorkMs",
+    "SpawnPacer/SpawnMs",
+    "SpawnPacer/ConstructMs",
+    "SpawnPacer/FinishMs",
+    "SpawnPacer/DestroyMs",
     "Exclusive/GameThread/ActorSpawning",
     "Exclusive/GameThread/ActorDestroying",
 )
@@ -61,6 +65,7 @@ BENCH = "SPBench/"
 WORK_COLUMNS = ("SPBaseline/WorkMs", "SpawnPacer/WorkMs")
 ACTIVE_WORK_MS = 0.01       # a frame with less spawner work than this did nothing but read the clock
 BUDGET_TOLERANCE = 1.10     # SC3: work <= 1.1 x budget
+FORCED_COLUMN = "SpawnPacer/ForcedJobs"   # SC3 lists frames whose first job was predicted over the budget separately
 
 csv.field_size_limit(1 << 30)
 
@@ -133,6 +138,13 @@ def column_values(header: list[str], rows: list[list[str]], column: str) -> list
     return [float(row[index]) for row in rows if index < len(row) and row[index].strip() != ""]
 
 
+def cell_value(row: list[str], index: int | None) -> float:
+    """The number in one cell, 0 for a missing column, a short row or an empty cell."""
+    if index is None or index >= len(row) or not row[index].strip():
+        return 0.0
+    return float(row[index])
+
+
 def events_per_frame(header: list[str], data: list[list[str]]) -> list[list[str]]:
     """The events of every frame, parsed once per capture (the analysis looks them up several times)."""
     return [frame_events(header, row) for row in data]
@@ -168,12 +180,20 @@ def summarize_window(header: list[str], data: list[list[str]], starts: list[int]
             values = column_values(header, frame_rows if column == "FrameTime" else rows, column)
             if values:
                 result["columns"][column] = summarize(values)
+    limit = BUDGET_TOLERANCE * budget_ms
     for column in WORK_COLUMNS:
         if column in header:
-            active = [v for v in column_values(header, rows, column) if v > ACTIVE_WORK_MS]
+            # Row-aligned (work, forced) pairs: SpawnPacer publishes ForcedJobs in the same frame as WorkMs.
+            work_index = header.index(column)
+            forced_index = header.index(FORCED_COLUMN) if column == "SpawnPacer/WorkMs" and FORCED_COLUMN in header else None
+            pairs = [(cell_value(row, work_index), cell_value(row, forced_index) > 0) for row in rows]
+            active = [(work, forced) for work, forced in pairs if work > ACTIVE_WORK_MS]
             if active:
-                stats = summarize(active)
-                stats["over_budget"] = sum(1 for v in active if v > BUDGET_TOLERANCE * budget_ms)
+                stats = summarize([work for work, _ in active])
+                stats["over_budget"] = sum(1 for work, _ in active if work > limit)
+                if forced_index is not None:
+                    stats["forced"] = sum(1 for _, forced in active if forced)
+                    stats["over_budget_unforced"] = sum(1 for work, forced in active if work > limit and not forced)
                 result.setdefault("active_work", {})[column] = stats
     if "FrameTime" in header:
         frame_times = column_values(header, frame_rows, "FrameTime")
@@ -253,7 +273,12 @@ def selftest() -> None:
     work = [[data[i][0], str(t), str(w)] for i, (t, w) in enumerate(zip(times, [0, 0, 1.0, 2.5, 0.005, 0, 0, 0, 0, 0]))]
     active = summarize_window(work_header, work, [2], 3, ("FrameTime",))["active_work"]["SPBaseline/WorkMs"]
     assert active["n"] == 2 and active["max"] == 2.5 and active["over_budget"] == 1   # 0.005 is idle; 2.5 > 2.2
-    print("selftest: OK (percentiles, summary, event parsing, windows, FrameTime lag, hitch counts, active work and latency match hand-worked values)")
+    paced_header = ["EVENTS", "FrameTime", "SpawnPacer/WorkMs", "SpawnPacer/ForcedJobs"]
+    paced = [[data[i][0], str(t), str(w), str(f)] for i, (t, w, f) in
+             enumerate(zip(times, [0, 0, 3.0, 2.5, 1.0, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]))]
+    active = summarize_window(paced_header, paced, [2], 3, ("FrameTime",))["active_work"]["SpawnPacer/WorkMs"]
+    assert active["over_budget"] == 2 and active["forced"] == 1 and active["over_budget_unforced"] == 1   # 3.0 forced
+    print("selftest: OK (percentiles, summary, event parsing, windows, FrameTime lag, hitch counts, active work, forced frames and latency match hand-worked values)")
 
 
 def main(argv: list[str]) -> int:

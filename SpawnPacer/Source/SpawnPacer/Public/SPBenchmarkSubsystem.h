@@ -7,6 +7,8 @@
 #include "SPBenchmarkSubsystem.generated.h"
 
 class ACameraActor;
+class ASPWaveActor;
+class USpawnPacerSubsystem;
 
 /**
  * Runs the benchmark for one game world (01_Problem_Analysis.md 6.1). A world subsystem rather than a placed actor,
@@ -25,9 +27,9 @@ class ACameraActor;
  *   next frame                   the run report is written; with -SPExit the game quits a few frames later
  *
  * Command line (all optional):
- *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2)
+ *   -SPConfig=B0      the configuration: B0, B1, B2, B3 (01 6.2), or SPS (SpawnPacer, spawn path; 02 9)
  *   -SPCountCap=K     B1: actors per frame (default 25; the batch script passes the calibrated value)
- *   -SPBudgetMs=MS    B2: the per-frame time cap, the same budget SpawnPacer gets (default 2.0)
+ *   -SPBudgetMs=MS    B2's time cap and SpawnPacer's budget: the same value for both (default 2.0)
  *   -SPWaveSize=N     actors per wave (default 0: no workload, a normal empty map)
  *   -SPWaves=N        wave cycles in the capture (default 3)
  *   -SPSeed=S         seed for the wave's class order and positions (default 1)
@@ -56,8 +58,9 @@ public:
 	virtual TStatId GetStatId() const override;
 	//~ End FTickableGameObject
 
-	/** Called by every wave actor at the very end of its BeginPlay (ASPWaveActor::BeginPlay). */
-	void NotifyActorReady() { ++ReadyThisWave; }
+	/** Called by every wave actor at the very end of its BeginPlay (ASPWaveActor::BeginPlay), and by a pool that reuses
+	 *  one. Completes the wave in the frame its last actor became ready, whoever spawned it and whenever in the frame. */
+	void NotifyActorReady();
 
 protected:
 	//~ Begin UWorldSubsystem
@@ -113,12 +116,28 @@ private:
 		uint64 DespawnCompleteFrame = 0;
 		uint64 GCFrame = 0;
 		int32 Ready = 0;
+
+		/** SPS: this cycle's SpawnPacer batches, INDEX_NONE once complete (or never made). */
+		int32 PacerWaveBatch = INDEX_NONE;
+		int32 PacerDespawnBatch = INDEX_NONE;
 	};
 
 	static FRunSettings ReadRunSettings();
 
-	/** Maps -SPConfig to a baseline; unset for an unknown name (and, from S5, for the SpawnPacer configurations). */
+	/** Maps -SPConfig to a baseline; unset for an unknown name and for the SpawnPacer configurations. */
 	static TOptional<ESPBaseline> ParseBaseline(const FString& Config);
+
+	/** True for the SpawnPacer configurations (SPS; SPP from S7). */
+	static bool IsPacerConfig(const FString& Config);
+
+	/** SPS: the wave as one SpawnPacer batch, with the same spawn parameters as the baselines. */
+	void RequestPacedWave(FWaveRecord& Record);
+
+	/** SPS: cancels what the wave batch hasn't spawned yet and releases every live wave actor, as one batch. */
+	void RequestPacedDespawn(FWaveRecord& Record);
+
+	/** SPS: a cycle's despawn is complete when both of its batches have completed (in either order). */
+	void HandleBatchComplete(int32 BatchId);
 
 	/** Logs settings that would silently produce a misleading run. Returns false if the run can't go ahead. */
 	bool ValidateRunSettings() const;
@@ -157,8 +176,16 @@ private:
 	UPROPERTY(Transient)
 	TArray<FSPWaveEntry> Wave;
 
+	/** B0-B3 only; null in the SpawnPacer configurations. */
 	UPROPERTY(Transient)
 	TObjectPtr<USPBaselineSpawner> Baseline;
+
+	/** SPS only: the world's SpawnPacer subsystem. */
+	UPROPERTY(Transient)
+	TObjectPtr<USpawnPacerSubsystem> Pacer;
+
+	/** SPS: the wave actors SpawnPacer has spawned in this cycle (weak: the despawn may find some gone). */
+	TArray<TWeakObjectPtr<ASPWaveActor>> PacedLive;
 
 	UPROPERTY(Transient)
 	TObjectPtr<ACameraActor> Camera;

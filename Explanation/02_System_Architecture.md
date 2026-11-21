@@ -89,7 +89,7 @@ D:\UNREAL PORTFOLIO\P02_SpawnPacer\Tools\                            ← Python 
 
 | Class | Kind / base | Responsibility | Why it exists, and what we rejected |
 |---|---|---|---|
-| `USpawnPacerSubsystem` | `UTickableWorldSubsystem` (Game and PIE only) | The **mechanism and public API**: `RequestSpawn`, `RequestRelease`, `Prewarm`, batches; owns the queues, pools and cost model; runs one frame of jobs in `Tick`; executes each stage against the engine; publishes telemetry | Its lifetime is exactly the world's. Its `Tick` runs once per frame after `TG_PostPhysics` (`Private/LevelTick.cpp:1778–1821`), so new actors take part in the next frame's physics and ticks. *Rejected:* a manager actor (can be deleted, duplicated, or missing from a map); a custom `FTickFunction` in `TG_PrePhysics` (UE5-UpdateBudget needed one to match a tick group; spawn work has no group to match, so the simpler tickable is enough); a game-instance subsystem (outlives worlds, but pooled actors die with their world) |
+| `USpawnPacerSubsystem` | `UWorldSubsystem` (Game and PIE only), working on `FWorldDelegates::OnWorldPostActorTick` | The **mechanism and public API**: `RequestSpawn`, `RequestRelease`, `CancelBatch`, `Prewarm` (S7), batches; owns the queues, pools and cost model; runs one frame of jobs per world tick; executes each stage against the engine; publishes telemetry | Its lifetime is exactly the world's. **Changed in S5:** planned as a tickable world subsystem, but tickable objects have no guaranteed order (`Public/Tickable.h:62`), so a request made by another tickable could be served this frame or the next by luck (§15). `OnWorldPostActorTick` is broadcast after every tick group **and** every tickable object (`Private/LevelTick.cpp:1821, 1877–1906`) and before the frame's garbage collection (1970): a request made anywhere during a frame is served in that frame, and new actors take part in the next frame's ticks and physics. Not broadcast while paused. *Rejected:* a manager actor (can be deleted, duplicated, or missing from a map); a custom `FTickFunction` (a tick group fixes the order against actors, not against tickables); a game-instance subsystem (outlives worlds, but pooled actors die with their world) |
 | `FSpawnPacerScheduler` | Plain C++ struct (no UObject) | The **policy**: given a budget, the cost model and two callbacks (*peek head*: the head job's key; *run head*: do it and return the measured ms), runs jobs by the rule in §2 and returns frame statistics | Unit-testable with fake jobs and fake costs, no world needed (S4). *Rejected:* the loop inside the subsystem, testable only in a running game |
 | `FSpawnCostModel` | Plain C++ struct | Per key **(class, stage, component name)**: mean and mean deviation; `Predict`, `Observe`, cold-start rule | Same reason: pure and testable. Keys use the component's `FName` because default subobjects have the same name in every instance of a class, and a weak `TObjectKey<UClass>` for the class, so a Blueprint class recompiled or unloaded between PIE sessions can't hand its learned cost to a new class at the same address (S4 code review) |
 | `FSpawnPacerRequest` | Plain C++ struct (inside the subsystem's arrays) | One request's **state machine**: kind, class, transform, priority, batch, current stage, `TWeakObjectPtr` to its actor, the held-back components, an optional `Initialize` callback | Small and explicit; the stages in §2 are its states (§6.2). *Rejected:* one `UObject` per request (GC churn for 500 requests per wave) |
@@ -109,7 +109,7 @@ Three of the eight are UObject types (the subsystem, the interface, the settings
 | `sp.Pool.VerifyReset` | `1`: snapshot on first use and compare on every acquire |
 | `sp.Debug` | On-screen queue length, spent ms, last frame's jobs |
 
-**Telemetry:** CSV category `SpawnPacer`, published **once per frame** (UE5-UpdateBudget measured ≈ 50 ns per `CSV_CUSTOM_STAT` call, so per-job publishing is avoided): `WorkMs`, `PredictedMs`, `Jobs`, `ForcedJobs`, `ColdJobs`, `Pending`, `Completed`, `Dropped`, per-stage ms (`ConstructMs`, `RegisterMs`, `FinishMs`, `AcquireMs`, `ReleaseMs`, `DestroyMs`), `ResetLeaks`. CSV events `SpawnPacer/BatchComplete`. A native multicast delegate `OnBatchComplete(BatchId)` and a Blueprint-assignable one.
+**Telemetry:** CSV category `SpawnPacer`, published **once per frame** (UE5-UpdateBudget measured ≈ 50 ns per `CSV_CUSTOM_STAT` call, so per-job publishing is avoided): `WorkMs`, `PredictedMs`, `Jobs`, `ForcedJobs`, `ColdJobs`, `Pending`, `Completed`, `Dropped`, `Cancelled` (S5), per-stage ms (`SpawnMs` (S5), `ConstructMs`, `RegisterMs`, `FinishMs`, `AcquireMs`, `ReleaseMs`, `DestroyMs`), `ResetLeaks`. CSV events `SpawnPacer/BatchComplete`. A native multicast delegate `OnBatchComplete(BatchId)` and a Blueprint-assignable one.
 
 ### 4.2 Game module `SpawnPacer` (demo and benchmark only)
 
@@ -175,14 +175,14 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant LT as Level tick (after TG_PostPhysics)
+  participant LT as UWorld::Tick, OnWorldPostActorTick (after every tick group and tickable)
   participant S as USpawnPacerSubsystem
   participant P as FSpawnPacerScheduler
   participant C as FSpawnCostModel
   participant E as Engine (SpawnActor / RegisterComponent / FinishSpawning / DestroyActor)
-  LT->>S: Tick(DeltaTime)
+  LT->>S: HandlePostActorTick (its own world only)
   S->>S: 1. move requests made since last frame into the queues
-  S->>P: 2. RunFrame(budget, PeekHead, Predict, RunHead)
+  S->>P: 2. RunFrame(budget, cost model, PeekHead, RunHead)
   loop while a head job exists
     P->>C: Predict(key of head job)
     C-->>P: mean + K·deviation (cold key: whole budget)
@@ -261,7 +261,9 @@ Predict           = Mean + K·Dev                        // K = 2
 | A held-back component is registered after `FinishSpawning` | **Forbidden by the state machine:** `Finish` runs only when no component is held back | 01b #4 |
 | A child component registered before its parent | Held-back components are registered in attachment order (parent first), as the engine does | `Actor.cpp:6237–6252` |
 | Someone requests a spawn or a release from inside a stage (BeginPlay spawning more actors) | New requests go to an incoming list, merged into the queues at the start of the next frame; the queue being iterated is never modified mid-loop | the same deferral rule as UE5-UpdateBudget |
-| A release is requested for an actor still being spawned | The request is marked cancelled; its next stage destroys (or finishes and parks) it instead of advancing | — |
+| A release is requested for an actor still being spawned | The actor is never finished: its own spawn request becomes the release (a Destroy job; from S7, parking). A half-spawned request is always at its queue's head, so this costs three checks. A request whose last stage is running at that moment (its BeginPlay releases itself) completes, and the release follows | S5 tests `ReleaseOfAHalfSpawnedActor` |
+| A batch is cancelled while some of its requests are mid-way (even from inside one of their own callbacks) | `CancelBatch` only sets a flag; the request's state decides at the head: not started → ends without a job; half-spawned → a Destroy job; last stage already running → completes | S5 tests `CancelBatch`, `CancelFromInsideInitialize` |
+| A world that never uses SpawnPacer pays for it | Nothing runs and nothing is published until the first request or batch | S5: baseline runs have no `SpawnPacer` columns |
 | A parked actor is destroyed behind the pool's back | `Unpark` skips invalid entries (Mass does the same: it pops until it finds a valid actor, `MassActorSpawnerSubsystem.cpp:244–249`) | verified |
 | Parked actors must not be garbage-collected, but must not outlive the world | Parked actors are held in a `UPROPERTY` map (GC-visible); the map is emptied in `Deinitialize`. They are also in the level's actor list, so the world destroys them on teardown | — |
 | A parked actor keeps costing frame time | `Park` switches off the actor's tick **and every component tick** that was on (remembered), because `SetActorTickEnabled` touches only the actor (01b #12) | verified |
@@ -362,4 +364,6 @@ Blueprint-only actors can be paced and pooled, but only as `Whole` or `Deferred`
 | (S1) The baseline spawner as a tickable subsystem | A `UObject` the director drives each frame | Tick order between tickable subsystems is not guaranteed (see §4.2) |
 | (S1) The director as a plain world subsystem | A tickable world subsystem | It advances the script and drives the spawner every frame, as UE5-UpdateBudget's director does |
 | (S3) The simple pool resets nothing | B3 calls two demo callbacks, `PrepareForReuse` and `PrepareForParking` (think timer, drone circle) | Without them a reused drone flew back to the park location and parked enemies kept thinking: a broken baseline, not a simple one (S3 code review). Gameplay state is still not reset, on purpose |
-| (S1) SpawnPacer requests are served the frame they are made | Possibly one frame later | The plugin's subsystem ticks on its own; if it ticks before the director in a frame, a request made that frame waits for the next. At most one frame (about 1.5% of a 60-frame wave) against SpawnPacer, reported, not hidden |
+| (S1) SpawnPacer requests are served the frame they are made | ~~Possibly one frame later~~ **(S5) The frame they are made, always** | The S1 concern: a tickable subsystem might tick before the director. Resolved in S5 by working on `OnWorldPostActorTick`, after every tickable (§4.1). The director's completion events come from the same frame too (05 F3) |
+| (S5) `USpawnPacerSubsystem` as a `UTickableWorldSubsystem` | A `UWorldSubsystem` on `OnWorldPostActorTick` | Deterministic order against every other tickable (§4.1) |
+| (S5) "Whole: plain `SpawnActor`" | Plain `SpawnActor` without an `Initialize` callback; with one, a deferred spawn finished in the same job | The same engine work (a plain `SpawnActor` is `PostSpawnInitialize` + `FinishSpawning`, `Private/Actor.cpp:4357–4360`), and `Initialize` then means the same thing in both modes: after registration, before the construction script and BeginPlay |
